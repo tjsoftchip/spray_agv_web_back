@@ -13,5 +13,6 @@ router.post('/start-mapping', mapController.startMapping);
 router.post('/stop-mapping', mapController.stopMapping);
 router.post('/save', mapController.saveMap);
 router.post('/:id/load', mapController.loadMap);
+router.delete('/:id', mapController.deleteMap);
 
 export default router;

@@ -49,6 +49,11 @@ class RosbridgeService {
           const now = Date.now();
           const lastSent = this.messageThrottle.get(topic) || 0;
           
+          // 添加调试信息
+          if (topic === '/map' || topic === '/robot_pose_k') {
+            console.log(`Received ${topic} message:`, message.msg ? 'has msg' : 'no msg');
+          }
+          
           if (now - lastSent >= this.throttleInterval) {
             this.broadcastToClients('ros_message', message);
             this.messageThrottle.set(topic, now);
