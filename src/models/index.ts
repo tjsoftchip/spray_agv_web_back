@@ -32,7 +32,7 @@ export const initDatabase = async (): Promise<void> => {
     await sequelize.authenticate();
     console.log('Database connection established successfully.');
     
-    await sequelize.sync({ alter: process.env.NODE_ENV === 'development' });
+    await sequelize.sync({ force: true });
     console.log('Database models synchronized.');
     
     const userCount = await User.count();

@@ -6,8 +6,20 @@ class RosbridgeService {
   private rosbridge: WebSocket | null = null;
   private reconnectInterval: NodeJS.Timeout | null = null;
   private rosbridgeUrl: string;
-  private messageThrottle: Map<string, number> = new Map();
-  private throttleInterval: number = 100;
+// 消息频率限制（毫秒）
+  private messageThrottle = new Map<string, number>();
+  private throttleInterval = 100; // 100ms最小间隔
+  
+  // 特殊话题的频率限制
+  private specialTopicIntervals: { [topic: string]: number } = {
+    '/map': 500, // 地图消息限制在500ms
+    '/amcl_pose': 50, // 机器人位姿消息限制在50ms
+    '/robot_pose': 50,
+    '/robot_pose_k': 50,
+    '/odom': 50,
+    '/tf': 50,
+    '/tf_static': 1000 // 静态tf消息限制在1s
+  };
 
   constructor() {
     this.rosbridgeUrl = process.env.ROSBRIDGE_URL || 'ws://localhost:9090';
@@ -49,12 +61,24 @@ class RosbridgeService {
           const now = Date.now();
           const lastSent = this.messageThrottle.get(topic) || 0;
           
+          // 使用特殊话题的频率限制
+          const throttleInterval = this.specialTopicIntervals[topic] || this.throttleInterval;
+          
           // 添加调试信息
-          if (topic === '/map' || topic === '/robot_pose_k') {
-            console.log(`Received ${topic} message:`, message.msg ? 'has msg' : 'no msg');
+          console.log(`Received ${topic} message:`, message.msg ? 'has msg' : 'no msg');
+          if (topic === '/tf' && message.msg && message.msg.transforms) {
+            console.log('TF transforms:', message.msg.transforms.length);
+          } else if (topic === '/map' && message.msg) {
+            console.log('Map info:', {
+              hasInfo: !!message.msg.info,
+              hasData: !!message.msg.data,
+              width: message.msg.info?.width,
+              height: message.msg.info?.height,
+              resolution: message.msg.info?.resolution
+            });
           }
           
-          if (now - lastSent >= this.throttleInterval) {
+          if (now - lastSent >= throttleInterval) {
             this.broadcastToClients('ros_message', message);
             this.messageThrottle.set(topic, now);
           }
@@ -116,6 +140,7 @@ class RosbridgeService {
       topic,
       type: messageType,
     };
+    console.log(`Subscribing to topic: ${topic} (${messageType})`);
     this.sendToRos(rosMessage);
   }
 
