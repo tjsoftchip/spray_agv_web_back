@@ -5,7 +5,8 @@ interface MapAttributes {
   id: string;
   name: string;
   description?: string;
-  filePath: string;
+  yamlPath: string;
+  pgmPath: string;
   resolution: number;
   width: number;
   height: number;
@@ -25,7 +26,8 @@ class MapModel extends Model<MapAttributes, MapCreationAttributes> implements Ma
   public id!: string;
   public name!: string;
   public description?: string;
-  public filePath!: string;
+  public yamlPath!: string;
+  public pgmPath!: string;
   public resolution!: number;
   public width!: number;
   public height!: number;
@@ -49,7 +51,11 @@ MapModel.init(
     description: {
       type: DataTypes.TEXT,
     },
-    filePath: {
+    yamlPath: {
+      type: DataTypes.STRING,
+      allowNull: false,
+    },
+    pgmPath: {
       type: DataTypes.STRING,
       allowNull: false,
     },

@@ -98,6 +98,30 @@ export const executeTask = async (req: AuthRequest, res: Response): Promise<void
       startTime: new Date(),
     });
 
+    // 获取模板数据并发送到ROS2
+    if (task.templateIds && task.templateIds.length > 0) {
+      const template = await require('../models').Template.findByPk(task.templateIds[0]);
+      if (template && template.navigationPoints && template.navigationPoints.length > 0) {
+        const rosbridgeService = require('../services/rosbridgeService');
+        
+        // 发送模板执行指令到ROS2
+        const templateMessage = {
+          id: template.id,
+          name: template.name,
+          navigationPoints: template.navigationPoints,
+          roadSegments: template.roadSegments || [],
+          yardName: template.yardName,
+          yardDimensions: template.yardDimensions,
+        };
+        
+        rosbridgeService.publish('/execute_template', 'std_msgs/String', {
+          data: JSON.stringify(templateMessage)
+        });
+        
+        console.log('Template execution sent to ROS2:', templateMessage);
+      }
+    }
+
     res.json({ message: 'Task execution started', task });
   } catch (error) {
     console.error('Execute task error:', error);

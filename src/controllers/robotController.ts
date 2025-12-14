@@ -76,15 +76,36 @@ export const startNavigation = async (req: Request, res: Response) => {
   try {
     const { goal } = req.body;
     
-    rosbridgeService.callService('/navigate_to_pose', 'nav2_msgs/NavigateToPose', {
-      pose: {
-        header: { frame_id: 'map' },
-        pose: goal,
+    // 使用话题发布导航目标，而不是服务调用
+    const goalMessage = {
+      header: {
+        stamp: { sec: 0, nanosec: 0 },
+        frame_id: 'map'
       },
-    });
-
-    res.json({ message: 'Navigation started' });
+      pose: {
+        position: {
+          x: goal.position?.x || 0,
+          y: goal.position?.y || 0,
+          z: goal.position?.z || 0
+        },
+        orientation: {
+          x: goal.orientation?.x || 0,
+          y: goal.orientation?.y || 0,
+          z: goal.orientation?.z || 0,
+          w: goal.orientation?.w || 1
+        }
+      }
+    };
+    
+    // 发布导航目标到Nav2
+    rosbridgeService.publish('/goal_pose', 'geometry_msgs/PoseStamped', goalMessage);
+    
+    // 或者可以直接调用NavigateToPose Action，但需要更复杂的实现
+    // 这里使用简单的话题发布方式
+    
+    res.json({ message: 'Navigation goal sent', goal: goalMessage });
   } catch (error) {
+    console.error('Navigation error:', error);
     res.status(500).json({ error: 'Failed to start navigation' });
   }
 };

@@ -112,9 +112,10 @@ class RosbridgeService {
 
   private sendToRos(data: any): void {
     if (this.rosbridge && this.rosbridge.readyState === WebSocket.OPEN) {
+      console.log('Sending to ROS:', JSON.stringify(data, null, 2));
       this.rosbridge.send(JSON.stringify(data));
     } else {
-      console.error('Rosbridge not connected');
+      console.error('Rosbridge not connected, cannot send:', data);
     }
   }
 
@@ -168,6 +169,72 @@ class RosbridgeService {
 
   public publish(topic: string, messageType: string, message: any): void {
     this.publishTopic(topic, messageType, message);
+  }
+
+  // 获取机器人当前位姿
+  public async getRobotPose(): Promise<any> {
+    return new Promise((resolve) => {
+      if (!this.isConnected()) {
+        resolve(null);
+        return;
+      }
+
+      // 尝试从多个可能的位姿话题获取数据
+      const poseTopics = ['/amcl_pose', '/robot_pose', '/robot_pose_k'];
+      let timeoutId: NodeJS.Timeout;
+      let messageReceived = false;
+
+      const cleanup = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        // 取消订阅
+        poseTopics.forEach(topic => {
+          this.unsubscribeTopic(topic);
+        });
+      };
+
+      // 设置超时
+      timeoutId = setTimeout(() => {
+        if (!messageReceived) {
+          cleanup();
+          resolve(null);
+        }
+      }, 2000); // 2秒超时
+
+      // 创建临时消息处理器
+      const tempHandler = (data: WebSocket.Data) => {
+        try {
+          const message = JSON.parse(data.toString());
+          const topic = message.topic;
+          
+          if (poseTopics.includes(topic) && message.msg && message.msg.pose) {
+            messageReceived = true;
+            cleanup();
+            resolve(message.msg.pose);
+          }
+        } catch (error) {
+          console.error('Error parsing pose message:', error);
+        }
+      };
+
+      // 临时添加消息监听器
+      if (this.rosbridge) {
+        this.rosbridge.on('message', tempHandler);
+        
+        // 订阅位姿话题
+        poseTopics.forEach(topic => {
+          this.subscribeTopic(topic, 'geometry_msgs/PoseWithCovarianceStamped');
+        });
+
+        // 2秒后移除监听器
+        setTimeout(() => {
+          if (this.rosbridge) {
+            this.rosbridge.removeListener('message', tempHandler);
+          }
+        }, 2000);
+      }
+    });
   }
 }
 

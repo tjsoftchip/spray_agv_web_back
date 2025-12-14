@@ -11,6 +11,7 @@ interface BeamYardAttributes {
     length: number;
     width: number;
   };
+  defaultMapId?: string;
   isActive: boolean;
   createdAt?: Date;
   updatedAt?: Date;
@@ -25,6 +26,7 @@ class BeamYard extends Model<BeamYardAttributes, BeamYardCreationAttributes> imp
   public location?: string;
   public shape!: 'rectangle' | 'custom';
   public dimensions!: { length: number; width: number };
+  public defaultMapId?: string;
   public isActive!: boolean;
   public readonly createdAt!: Date;
   public readonly updatedAt!: Date;
@@ -55,6 +57,10 @@ BeamYard.init(
     dimensions: {
       type: DataTypes.JSON,
       allowNull: false,
+    },
+    defaultMapId: {
+      type: DataTypes.STRING,
+      allowNull: true,
     },
     isActive: {
       type: DataTypes.BOOLEAN,
