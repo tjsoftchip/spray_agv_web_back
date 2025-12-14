@@ -495,10 +495,9 @@ export const saveMap = async (req: Request, res: Response) => {
     const execAsync = promisify(exec);
     const fs = require('fs').promises;
     
-    // 创建地图文件路径
-    const timestamp = Date.now();
-    const mapDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/maps';
-    const mapPath = `${mapDir}/${name}_${timestamp}`;
+    // 创建地图文件路径（使用原厂默认路径）
+    const mapDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
+    const mapPath = `${mapDir}/${name}`;
     
     // 确保目录存在
     await execAsync(`mkdir -p ${mapDir}`);
@@ -572,40 +571,48 @@ EOF
 fi
 `;
     
-    // 直接调用命令保存地图
-    console.log('Saving map directly...');
+    // 直接调用原厂launch文件保存地图
+    console.log('Saving map using launch file...');
     
     try {
-      // 检查地图话题是否存在
-      const checkCmd = `source /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash && ros2 topic info /map`;
-      const { stdout: checkOut } = await execAsync(checkCmd, { 
+      // 使用原厂launch文件保存地图
+      const saveCmd = `bash -c "
+        cd /home/jetson/yahboomcar_ros2_ws &&
+        source yahboomcar_ws/install/setup.bash &&
+        ros2 launch yahboomcar_nav save_map_launch.py map_name:=${name}
+      "`;
+      
+      const { stdout, stderr } = await execAsync(saveCmd, { 
         shell: true,
         env: { ...process.env, ROS_DOMAIN_ID: '77' }
       });
+      console.log('Map save output:', stdout);
+      if (stderr) console.log('Map save stderr:', stderr);
+    } catch (e: any) {
+      console.error('Error saving map:', e);
+      console.log('Attempting to save using alternative method...');
       
-      if (checkOut.includes('Type: nav_msgs/msg/OccupancyGrid')) {
-        console.log('Map topic found, saving...');
-        // 保存地图
-        const saveCmd = `
-          source /home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/install/setup.bash &&
-          ros2 run nav2_map_server map_saver_cli -f ${mapPath}
-        `;
+      // 备选方案：直接调用map_saver_cli
+      try {
+        const altSaveCmd = `bash -c "
+          cd /home/jetson/yahboomcar_ros2_ws &&
+          source yahboomcar_ws/install/setup.bash &&
+          timeout 10 ros2 run nav2_map_server map_saver_cli -f ${mapPath}
+        "`;
         
-        const { stdout, stderr } = await execAsync(saveCmd, { 
+        const { stdout: altOut, stderr: altErr } = await execAsync(altSaveCmd, { 
           shell: true,
           env: { ...process.env, ROS_DOMAIN_ID: '77' }
         });
-        console.log('Map save output:', stdout);
-        if (stderr) console.log('Map save stderr:', stderr);
-      } else {
-        throw new Error('Map topic not found');
+        console.log('Alternative save output:', altOut);
+        if (altErr) console.log('Alternative save stderr:', altErr);
+      } catch (altError: any) {
+        console.error('Alternative save also failed:', altError);
+        // 创建占位符文件（使用原厂格式）
+        await fs.writeFile(`${mapPath}.yaml`, `image: ${mapPath}.pgm\nmode: trinary\nresolution: 0.05\norigin: [-10, -10, 0]\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n`);
+        await fs.writeFile(`${mapPath}.pgm`, 'P2\n1 1\n255\n255\n');
+        console.log('Created placeholder map files');
       }
-    } catch (e: any) {
-      console.error('Error saving map:', e);
-      // 创建占位符文件
-      await fs.writeFile(`${mapPath}.yaml`, `image: ${mapPath}.pgm\nresolution: 0.05\norigin: [0.0, 0.0, 0.0]\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n`);
-      await fs.writeFile(`${mapPath}.pgm`, 'P2\n1 1\n255\n255\n');
-      console.log('Created placeholder map files');
     }
     
     // 读取实际地图信息
