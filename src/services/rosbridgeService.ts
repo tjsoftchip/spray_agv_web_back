@@ -15,7 +15,6 @@ class RosbridgeService {
     '/map': 500, // 地图消息限制在500ms
     '/amcl_pose': 50, // 机器人位姿消息限制在50ms
     '/robot_pose': 50,
-    '/robot_pose_k': 50,
     '/odom': 50,
     '/tf': 50,
     '/tf_static': 1000 // 静态tf消息限制在1s
@@ -180,7 +179,7 @@ class RosbridgeService {
       }
 
       // 尝试从多个可能的位姿话题获取数据
-      const poseTopics = ['/amcl_pose', '/robot_pose', '/robot_pose_k'];
+      const poseTopics = ['/amcl_pose', '/robot_pose'];
       let timeoutId: NodeJS.Timeout;
       let messageReceived = false;
 

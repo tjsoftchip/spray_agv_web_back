@@ -334,6 +334,32 @@ export const startMappingLocal = async (req: Request, res: Response) => {
       });
     }, 5000);
     
+    // 最后检查所有节点是否都已启动
+    console.log('Verifying all nodes are running...');
+    const checkNodes = async () => {
+      const nodes = [
+        { name: 'cartographer', pattern: 'map_cartographer_launch.py' },
+        { name: 'robot_pose_publisher', pattern: 'robot_pose_publisher' },
+        { name: 'laserscan_to_point', pattern: 'laserscan_to_point' },
+        { name: 'yahboom_app_save_map', pattern: 'yahboom_app_save_map' }
+      ];
+      
+      for (const node of nodes) {
+        await new Promise<void>((resolve) => {
+          exec(`pgrep -f "${node.pattern}"`, { shell: true }, (error: any) => {
+            if (error) {
+              console.warn(`Warning: ${node.name} may not be running`);
+            } else {
+              console.log(`${node.name} is running`);
+            }
+            resolve();
+          });
+        });
+      }
+    };
+    
+    await checkNodes();
+    
     console.log('All mapping services started successfully');
     res.json({ 
       message: 'Local mapping started successfully',
@@ -392,6 +418,7 @@ export const stopMappingLocal = async (req: Request, res: Response) => {
     exec('pkill -f "joy_ctrl" 2>/dev/null', { shell: true });
     exec('pkill -f "joy_node" 2>/dev/null', { shell: true });
     exec('pkill -f "static_transform_publisher" 2>/dev/null', { shell: true });
+    exec('pkill -f "robot_state_publisher" 2>/dev/null', { shell: true });
     await new Promise(resolve => setTimeout(resolve, 2000));
     
     // 强制杀死所有残留进程
@@ -404,6 +431,7 @@ export const stopMappingLocal = async (req: Request, res: Response) => {
     exec('pkill -9 -f "joy_ctrl" 2>/dev/null', { shell: true });
     exec('pkill -9 -f "joy_node" 2>/dev/null', { shell: true });
     exec('pkill -9 -f "static_transform_publisher" 2>/dev/null', { shell: true });
+    exec('pkill -9 -f "robot_state_publisher" 2>/dev/null', { shell: true });
     
     // 更新状态
     fs.writeFileSync('/tmp/mapping_state.json', JSON.stringify({
