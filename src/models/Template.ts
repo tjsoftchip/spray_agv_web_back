@@ -12,6 +12,7 @@ interface TemplateAttributes {
     length: number;
     width: number;
   };
+  defaultMapId?: string;
   navigationPoints: Array<{
     id: string;
     name: string;
@@ -50,6 +51,7 @@ class Template extends Model<TemplateAttributes, TemplateCreationAttributes> imp
   public yardName!: string;
   public yardShape!: 'rectangle' | 'custom';
   public yardDimensions!: { length: number; width: number };
+  public defaultMapId?: string;
   public navigationPoints!: Array<{
     id: string;
     name: string;
@@ -109,6 +111,10 @@ Template.init(
     yardDimensions: {
       type: DataTypes.JSON,
       allowNull: false,
+    },
+    defaultMapId: {
+      type: DataTypes.STRING,
+      allowNull: true,
     },
     navigationPoints: {
       type: DataTypes.JSON,

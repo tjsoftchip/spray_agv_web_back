@@ -212,6 +212,7 @@ export const startMapping = async (req: Request, res: Response) => {
       console.log('Subscribe request sent for /map');
       // 机器人位姿话题
       rosbridgeService.subscribeTopic('/robot_pose', 'geometry_msgs/PoseStamped');
+      rosbridgeService.subscribeTopic('/robot_pose_k', 'geometry_msgs/PoseStamped');
       rosbridgeService.subscribeTopic('/odom', 'nav_msgs/Odometry');
       rosbridgeService.subscribeTopic('/amcl_pose', 'geometry_msgs/PoseWithCovarianceStamped');
       // 订阅tf话题获取机器人位置
@@ -389,6 +390,7 @@ export const stopMapping = async (req: Request, res: Response) => {
       // 取消订阅所有地图相关话题
       rosbridgeService.unsubscribeTopic('/map');
       rosbridgeService.unsubscribeTopic('/robot_pose');
+      rosbridgeService.unsubscribeTopic('/robot_pose_k');
       rosbridgeService.unsubscribeTopic('/odom');
       rosbridgeService.unsubscribeTopic('/amcl_pose');
       rosbridgeService.unsubscribeTopic('/tf');
@@ -528,6 +530,7 @@ export const forceStopMapping = async (req: Request, res: Response) => {
     rosbridgeService.unsubscribeTopic('/map');
     
     rosbridgeService.unsubscribeTopic('/robot_pose');
+    rosbridgeService.unsubscribeTopic('/robot_pose_k');
     rosbridgeService.unsubscribeTopic('/odom');
     rosbridgeService.unsubscribeTopic('/amcl_pose');
     rosbridgeService.unsubscribeTopic('/tf');
@@ -569,6 +572,7 @@ export const startMappingLocal = async (req: Request, res: Response) => {
       // 尝试多个机器人位姿话题
       
       rosbridgeService.subscribeTopic('/robot_pose', 'geometry_msgs/PoseStamped');
+      rosbridgeService.subscribeTopic('/robot_pose_k', 'geometry_msgs/PoseStamped');
       rosbridgeService.subscribeTopic('/odom', 'nav_msgs/Odometry');
       rosbridgeService.subscribeTopic('/amcl_pose', 'geometry_msgs/PoseWithCovarianceStamped');
       // 订阅tf话题获取机器人位置
@@ -595,6 +599,7 @@ export const stopMappingLocal = async (req: Request, res: Response) => {
     // 取消订阅
     rosbridgeService.unsubscribeTopic('/map');
     rosbridgeService.unsubscribeTopic('/robot_pose');
+    rosbridgeService.unsubscribeTopic('/robot_pose_k');
     rosbridgeService.unsubscribeTopic('/odom');
     rosbridgeService.unsubscribeTopic('/amcl_pose');
     rosbridgeService.unsubscribeTopic('/tf');
