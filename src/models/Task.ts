@@ -29,6 +29,23 @@ interface TaskAttributes {
     level: 'info' | 'warning' | 'error';
     message: string;
   }>;
+  navigationSequence?: Array<{
+    pointId: string;
+    pointName: string;
+    position: { x: number; y: number; z: number };
+    orientation: { x: number; y: number; z: number; w: number };
+    status: 'pending' | 'navigating' | 'arrived' | 'failed';
+    startTime?: Date;
+    endTime?: Date;
+    retryCount?: number;
+  }>;
+  currentNavigationIndex?: number;
+  obstacleEvents?: Array<{
+    timestamp: Date;
+    type: 'laser_only' | 'camera_only' | 'both_confirmed';
+    action: 'stopped' | 'slowed' | 'continued';
+    position: { x: number; y: number };
+  }>;
   isDeleted: boolean;
   createdAt?: Date;
   updatedAt?: Date;
@@ -63,6 +80,23 @@ class Task extends Model<TaskAttributes, TaskCreationAttributes> implements Task
     timestamp: Date;
     level: 'info' | 'warning' | 'error';
     message: string;
+  }>;
+  public navigationSequence?: Array<{
+    pointId: string;
+    pointName: string;
+    position: { x: number; y: number; z: number };
+    orientation: { x: number; y: number; z: number; w: number };
+    status: 'pending' | 'navigating' | 'arrived' | 'failed';
+    startTime?: Date;
+    endTime?: Date;
+    retryCount?: number;
+  }>;
+  public currentNavigationIndex?: number;
+  public obstacleEvents?: Array<{
+    timestamp: Date;
+    type: 'laser_only' | 'camera_only' | 'both_confirmed';
+    action: 'stopped' | 'slowed' | 'continued';
+    position: { x: number; y: number };
   }>;
   public isDeleted!: boolean;
   public readonly createdAt!: Date;
@@ -132,6 +166,21 @@ Task.init(
     executionLogs: {
       type: DataTypes.JSON,
       allowNull: false,
+      defaultValue: [],
+    },
+    navigationSequence: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      defaultValue: [],
+    },
+    currentNavigationIndex: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: 0,
+    },
+    obstacleEvents: {
+      type: DataTypes.JSON,
+      allowNull: true,
       defaultValue: [],
     },
     isDeleted: {

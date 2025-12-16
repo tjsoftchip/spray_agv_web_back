@@ -106,14 +106,18 @@ export const addNavigationPoint = async (req: AuthRequest, res: Response): Promi
       return;
     }
 
-    const navigationPoints = template.navigationPoints || [];
+    const navigationPoints = [...(template.navigationPoints || [])];
     const newPoint = {
       id: `nav_${Date.now()}`,
       ...req.body,
     };
 
     navigationPoints.push(newPoint);
-    await template.update({ navigationPoints });
+    
+    // 使用 set + changed 确保 Sequelize 检测到 JSON 字段的变化
+    template.set('navigationPoints', navigationPoints);
+    template.changed('navigationPoints', true);
+    await template.save();
     
     res.status(201).json(newPoint);
   } catch (error) {
@@ -132,7 +136,7 @@ export const updateNavigationPoint = async (req: AuthRequest, res: Response): Pr
       return;
     }
 
-    const navigationPoints = template.navigationPoints || [];
+    const navigationPoints = [...(template.navigationPoints || [])];
     const pointIndex = navigationPoints.findIndex((p: any) => p.id === pointId);
     
     if (pointIndex === -1) {
@@ -141,7 +145,10 @@ export const updateNavigationPoint = async (req: AuthRequest, res: Response): Pr
     }
 
     navigationPoints[pointIndex] = { ...navigationPoints[pointIndex], ...req.body };
-    await template.update({ navigationPoints });
+    
+    template.set('navigationPoints', navigationPoints);
+    template.changed('navigationPoints', true);
+    await template.save();
     
     res.json(navigationPoints[pointIndex]);
   } catch (error) {
@@ -160,12 +167,31 @@ export const deleteNavigationPoint = async (req: AuthRequest, res: Response): Pr
       return;
     }
 
-    const navigationPoints = template.navigationPoints || [];
+    const navigationPoints = [...(template.navigationPoints || [])];
     const filteredPoints = navigationPoints.filter((p: any) => p.id !== pointId);
     
-    await template.update({ navigationPoints: filteredPoints });
+    // 级联删除：删除所有引用该导航点的路段
+    const roadSegments = [...(template.roadSegments || [])];
+    const filteredSegments = roadSegments.filter(
+      (s: any) => s.startNavPointId !== pointId && s.endNavPointId !== pointId
+    );
     
-    res.json({ message: 'Navigation point deleted successfully' });
+    const deletedSegmentsCount = roadSegments.length - filteredSegments.length;
+    
+    template.set('navigationPoints', filteredPoints);
+    template.changed('navigationPoints', true);
+    
+    if (deletedSegmentsCount > 0) {
+      template.set('roadSegments', filteredSegments);
+      template.changed('roadSegments', true);
+    }
+    
+    await template.save();
+    
+    res.json({ 
+      message: 'Navigation point deleted successfully',
+      deletedSegmentsCount 
+    });
   } catch (error) {
     console.error('Delete navigation point error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -183,7 +209,7 @@ export const reorderNavigationPoints = async (req: AuthRequest, res: Response): 
       return;
     }
 
-    const navigationPoints = template.navigationPoints || [];
+    const navigationPoints = [...(template.navigationPoints || [])];
     const reorderedPoints: any[] = [];
     
     pointIds.forEach((id: string, index: number) => {
@@ -193,7 +219,9 @@ export const reorderNavigationPoints = async (req: AuthRequest, res: Response): 
       }
     });
     
-    await template.update({ navigationPoints: reorderedPoints });
+    template.set('navigationPoints', reorderedPoints);
+    template.changed('navigationPoints', true);
+    await template.save();
     
     res.json(reorderedPoints);
   } catch (error) {
@@ -261,7 +289,9 @@ export const generateRoadSegments = async (req: AuthRequest, res: Response): Pro
       });
     }
     
-    await template.update({ roadSegments });
+    template.set('roadSegments', roadSegments);
+    template.changed('roadSegments', true);
+    await template.save();
     
     res.json(roadSegments);
   } catch (error) {
@@ -288,12 +318,69 @@ export const updateRoadSegment = async (req: AuthRequest, res: Response): Promis
       return;
     }
 
-    roadSegments[segmentIndex] = { ...roadSegments[segmentIndex], ...req.body };
-    await template.update({ roadSegments });
+    const updatedSegments = [...roadSegments];
+    updatedSegments[segmentIndex] = { ...updatedSegments[segmentIndex], ...req.body };
     
-    res.json(roadSegments[segmentIndex]);
+    template.set('roadSegments', updatedSegments);
+    template.changed('roadSegments', true);
+    await template.save();
+    
+    res.json(updatedSegments[segmentIndex]);
   } catch (error) {
     console.error('Update road segment error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+export const addRoadSegment = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { templateId } = req.params;
+    const template = await Template.findByPk(templateId);
+    
+    if (!template) {
+      res.status(404).json({ error: 'Template not found' });
+      return;
+    }
+
+    const roadSegments = [...(template.roadSegments || [])];
+    const newSegment = {
+      id: `segment_${Date.now()}`,
+      ...req.body,
+    };
+
+    roadSegments.push(newSegment);
+    
+    template.set('roadSegments', roadSegments);
+    template.changed('roadSegments', true);
+    await template.save();
+    
+    res.status(201).json(newSegment);
+  } catch (error) {
+    console.error('Add road segment error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+export const deleteRoadSegment = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { templateId, segmentId } = req.params;
+    const template = await Template.findByPk(templateId);
+    
+    if (!template) {
+      res.status(404).json({ error: 'Template not found' });
+      return;
+    }
+
+    const roadSegments = [...(template.roadSegments || [])];
+    const filteredSegments = roadSegments.filter((s: any) => s.id !== segmentId);
+    
+    template.set('roadSegments', filteredSegments);
+    template.changed('roadSegments', true);
+    await template.save();
+    
+    res.json({ message: 'Road segment deleted successfully' });
+  } catch (error) {
+    console.error('Delete road segment error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -302,7 +389,7 @@ export const updateRoadSegment = async (req: AuthRequest, res: Response): Promis
 export const getCurrentRobotPosition = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     // 从ROS2获取当前机器人位置
-    const rosbridgeService = require('../services/rosbridgeService');
+    const rosbridgeService = require('../services/rosbridgeService').default;
     
     // 获取机器人位姿
     const pose = await rosbridgeService.getRobotPose();
@@ -331,10 +418,111 @@ export const getCurrentRobotPosition = async (req: AuthRequest, res: Response): 
     });
   } catch (error) {
     console.error('Get current robot position error:', error);
-    // 发生错误时返回默认位置
     res.json({
       position: { x: 0, y: 0, z: 0 },
       orientation: { x: 0, y: 0, z: 0, w: 1 },
     });
+  }
+};
+
+export const generatePathPreview = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const template = await Template.findByPk(id);
+    
+    if (!template) {
+      res.status(404).json({ error: 'Template not found' });
+      return;
+    }
+
+    const points = template.navigationPoints || [];
+    if (points.length < 2) {
+      res.json({
+        points: [],
+        totalDistance: 0,
+        estimatedTime: 0,
+      });
+      return;
+    }
+
+    const pathPoints = [];
+    let totalDistance = 0;
+    
+    for (let i = 0; i < points.length - 1; i++) {
+      const p1 = points[i].position;
+      const p2 = points[i + 1].position;
+      
+      pathPoints.push({ x: p1.x, y: p1.y });
+      
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      totalDistance += distance;
+    }
+    
+    pathPoints.push({ 
+      x: points[points.length - 1].position.x, 
+      y: points[points.length - 1].position.y 
+    });
+
+    const avgSpeed = 0.26;
+    const estimatedTime = totalDistance / avgSpeed;
+
+    res.json({
+      points: pathPoints,
+      totalDistance: totalDistance.toFixed(2),
+      estimatedTime: Math.ceil(estimatedTime),
+    });
+  } catch (error) {
+    console.error('Generate path preview error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+export const validateNavigation = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const template = await Template.findByPk(id);
+    
+    if (!template) {
+      res.status(404).json({ error: 'Template not found' });
+      return;
+    }
+
+    const points = template.navigationPoints || [];
+    const issues = [];
+
+    if (points.length === 0) {
+      issues.push({ pointId: null, issue: '没有配置导航点' });
+    }
+
+    for (const point of points) {
+      if (!point.position || point.position.x === undefined || point.position.y === undefined) {
+        issues.push({ pointId: point.id, issue: '位置坐标不完整' });
+      }
+      
+      if (!point.orientation || point.orientation.w === undefined) {
+        issues.push({ pointId: point.id, issue: '朝向数据不完整' });
+      }
+      
+      const qNorm = Math.sqrt(
+        Math.pow(point.orientation.x, 2) +
+        Math.pow(point.orientation.y, 2) +
+        Math.pow(point.orientation.z, 2) +
+        Math.pow(point.orientation.w, 2)
+      );
+      
+      if (Math.abs(qNorm - 1.0) > 0.01) {
+        issues.push({ pointId: point.id, issue: '四元数未归一化' });
+      }
+    }
+
+    res.json({
+      valid: issues.length === 0,
+      issues,
+    });
+  } catch (error) {
+    console.error('Validate navigation error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 };

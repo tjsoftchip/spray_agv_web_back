@@ -1,0 +1,321 @@
+import { Response } from 'express';
+import { AuthRequest } from '../middleware/auth';
+import { Task, NavigationPoint, Template } from '../models';
+import rosbridgeService from '../services/rosbridgeService';
+
+export const startNavigation = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { taskId, startFromPoint = 0 } = req.body;
+    
+    const task = await Task.findByPk(taskId);
+    if (!task || task.isDeleted) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+
+    if (!task.navigationSequence || task.navigationSequence.length === 0) {
+      const navigationSequence = await generateNavigationSequence(task);
+      await task.update({ navigationSequence });
+    }
+
+    const startData = {
+      taskId: task.id,
+      navigationSequence: task.navigationSequence,
+      startFromPoint,
+    };
+
+    rosbridgeService.publish('/navigation_task/start', 'std_msgs/String', {
+      data: JSON.stringify(startData),
+    });
+
+    await task.update({
+      status: 'running',
+      startTime: new Date(),
+      currentNavigationIndex: startFromPoint,
+    });
+
+    res.json({
+      success: true,
+      message: 'Navigation started',
+      taskId: task.id,
+    });
+  } catch (error) {
+    console.error('Start navigation error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+export const pauseNavigation = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { taskId } = req.body;
+    
+    const task = await Task.findByPk(taskId);
+    if (!task || task.isDeleted) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+
+    rosbridgeService.publish('/navigation_task/pause', 'std_msgs/Empty', {});
+
+    await task.update({ status: 'paused' });
+
+    res.json({
+      success: true,
+      message: 'Navigation paused',
+    });
+  } catch (error) {
+    console.error('Pause navigation error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+export const resumeNavigation = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { taskId } = req.body;
+    
+    const task = await Task.findByPk(taskId);
+    if (!task || task.isDeleted) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+
+    rosbridgeService.publish('/navigation_task/resume', 'std_msgs/Empty', {});
+
+    await task.update({ status: 'running' });
+
+    res.json({
+      success: true,
+      message: 'Navigation resumed',
+    });
+  } catch (error) {
+    console.error('Resume navigation error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+export const stopNavigation = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { taskId } = req.body;
+    
+    const task = await Task.findByPk(taskId);
+    if (!task || task.isDeleted) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+
+    rosbridgeService.publish('/navigation_task/stop', 'std_msgs/Empty', {});
+
+    await task.update({
+      status: 'completed',
+      endTime: new Date(),
+    });
+
+    res.json({
+      success: true,
+      message: 'Navigation stopped',
+    });
+  } catch (error) {
+    console.error('Stop navigation error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+export const getNavigationStatus = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { taskId } = req.params;
+    
+    const task = await Task.findByPk(taskId);
+    if (!task || task.isDeleted) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+
+    const currentPoint = task.navigationSequence && task.currentNavigationIndex !== undefined
+      ? task.navigationSequence[task.currentNavigationIndex]
+      : null;
+
+    res.json({
+      taskId: task.id,
+      status: task.status,
+      currentIndex: task.currentNavigationIndex || 0,
+      totalPoints: task.navigationSequence?.length || 0,
+      progress: task.progress,
+      currentPoint,
+      startTime: task.startTime,
+      endTime: task.endTime,
+    });
+  } catch (error) {
+    console.error('Get navigation status error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+export const gotoPoint = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { templateId, pointId } = req.body;
+    
+    console.log('[Goto Point Request]', {
+      templateId,
+      pointId,
+      body: req.body
+    });
+    
+    // 验证输入参数
+    if (!templateId || !pointId) {
+      console.log('[Goto Point Error] Missing required parameters:', { templateId, pointId });
+      res.status(400).json({ error: 'Missing required parameters: templateId and pointId' });
+      return;
+    }
+    
+    // 首先从 navigation_points 表查找
+    let point = await NavigationPoint.findByPk(pointId);
+    
+    // 如果没找到，尝试从模板的 JSON 字段查找
+    if (!point) {
+      console.log('[Goto Point] Point not found in navigation_points table, checking template JSON');
+      const template: any = await Template.findByPk(templateId);
+      if (template) {
+        try {
+          let navigationPoints;
+          if (typeof template.navigationPoints === 'string') {
+            navigationPoints = JSON.parse(template.navigationPoints || '[]');
+          } else {
+            navigationPoints = template.navigationPoints || [];
+          }
+          point = navigationPoints.find((p: any) => p.id === pointId);
+        } catch (parseError) {
+          console.error('[Goto Point Error] Failed to parse navigationPoints JSON:', parseError);
+          res.status(500).json({ error: 'Failed to parse template navigation points' });
+          return;
+        }
+      } else {
+        console.log('[Goto Point Error] Template not found:', templateId);
+        res.status(404).json({ error: 'Template not found' });
+        return;
+      }
+    }
+    
+    if (!point) {
+      console.log('[Goto Point Error] Navigation point not found:', pointId);
+      res.status(404).json({ error: 'Navigation point not found' });
+      return;
+    }
+
+    // 确保位置和方向是对象格式，不是字符串
+    let positionObj, orientationObj;
+    if (typeof point.position === 'string') {
+      positionObj = JSON.parse(point.position);
+    } else {
+      positionObj = point.position;
+    }
+    
+    if (typeof point.orientation === 'string') {
+      orientationObj = JSON.parse(point.orientation);
+    } else {
+      orientationObj = point.orientation;
+    }
+    
+    const testTask = {
+      taskId: `test_${Date.now()}`,
+      navigationSequence: [{
+        pointId: point.id,
+        name: point.name, // ROS端期望的是'name'字段，不是'pointName'
+        position: positionObj, // 确保是对象，不是字符串
+        orientation: orientationObj, // 确保是对象，不是字符串
+        status: 'pending',
+      }],
+      startFromPoint: 0,
+    };
+
+    console.log('[Goto Point] Publishing navigation task:', testTask);
+
+    try {
+      rosbridgeService.publish('/navigation_task/start', 'std_msgs/String', {
+        data: JSON.stringify(testTask),
+      });
+      console.log('[Goto Point] Navigation task published successfully');
+    } catch (rosError) {
+      console.error('[Goto Point Error] Failed to publish to ROS:', rosError);
+      res.status(500).json({ error: 'Failed to publish navigation task to ROS' });
+      return;
+    }
+
+    res.json({
+      success: true,
+      message: 'Navigation to point started',
+      point: {
+        id: point.id,
+        name: point.name,
+        position: point.position,
+      },
+    });
+  } catch (error) {
+    console.error('[Goto Point Error] Unexpected error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error instanceof Error ? error.message : 'Unknown error' });
+  }
+};
+
+export const setInitialPose = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { x, y, theta } = req.body;
+
+    const poseData = {
+      header: {
+        frame_id: 'map',
+        stamp: {
+          sec: Math.floor(Date.now() / 1000),
+          nanosec: (Date.now() % 1000) * 1000000,
+        },
+      },
+      pose: {
+        pose: {
+          position: { x, y, z: 0.0 },
+          orientation: {
+            x: 0.0,
+            y: 0.0,
+            z: Math.sin(theta / 2),
+            w: Math.cos(theta / 2),
+          },
+        },
+      },
+    };
+
+    rosbridgeService.publish('/initialpose', 'geometry_msgs/PoseWithCovarianceStamped', poseData);
+
+    res.json({
+      success: true,
+      message: 'Initial pose set',
+      pose: { x, y, theta },
+    });
+  } catch (error) {
+    console.error('Set initial pose error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+async function generateNavigationSequence(task: any): Promise<any[]> {
+  const sequence: any[] = [];
+  
+  for (const templateId of task.templateIds) {
+    const template = await Template.findByPk(templateId);
+    if (!template) continue;
+
+    const points = await NavigationPoint.findAll({
+      where: { templateId },
+      order: [['order', 'ASC']],
+    });
+
+    for (const point of points) {
+      sequence.push({
+        pointId: point.id,
+        pointName: point.name,
+        position: point.position,
+        orientation: point.orientation,
+        status: 'pending',
+        actionOnArrival: point.actionOnArrival,
+      });
+    }
+  }
+
+  return sequence;
+}

@@ -4,6 +4,7 @@ import {
   getTaskById,
   createTask,
   updateTask,
+  updateTaskOrder,
   deleteTask,
   executeTask,
   pauseTask,
@@ -17,6 +18,7 @@ const router = Router();
 router.get('/', authenticate, getTasks);
 router.get('/:id', authenticate, getTaskById);
 router.post('/', authenticate, authorize('admin', 'operator'), createTask);
+router.put('/order', authenticate, authorize('admin', 'operator'), updateTaskOrder);
 router.put('/:id', authenticate, authorize('admin', 'operator'), updateTask);
 router.delete('/:id', authenticate, authorize('admin'), deleteTask);
 router.post('/:id/execute', authenticate, authorize('admin', 'operator'), executeTask);

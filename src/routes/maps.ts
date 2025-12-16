@@ -1,10 +1,8 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth';
+import * as mapController from '../controllers/mapController';
 
 const router = Router();
-
-// 直接导入简化控制器，避免TypeScript编译问题
-const mapController = require('../controllers/mapController_simple');
 
 // 添加不需要认证的本地状态检查端点
 router.get('/mapping-status-local', (req, res) => mapController.getMappingStatusLocal(req, res));

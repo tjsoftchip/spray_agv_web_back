@@ -6,6 +6,8 @@ class RosbridgeService {
   private rosbridge: WebSocket | null = null;
   private reconnectInterval: NodeJS.Timeout | null = null;
   private rosbridgeUrl: string;
+  public latestObstacleStatus: any = null;
+  public latestNavigationStatus: any = null;
 // 消息频率限制（毫秒）
   private messageThrottle = new Map<string, number>();
   private throttleInterval = 100; // 100ms最小间隔
@@ -17,7 +19,9 @@ class RosbridgeService {
     '/robot_pose': 50,
     '/odom': 50,
     '/tf': 50,
-    '/tf_static': 1000 // 静态tf消息限制在1s
+    '/tf_static': 1000, // 静态tf消息限制在1s
+    '/navigation_task/status': 200, // 导航状态200ms
+    '/obstacle_detection': 100 // 障碍物检测100ms
   };
 
   constructor() {
@@ -51,6 +55,10 @@ class RosbridgeService {
           clearInterval(this.reconnectInterval);
           this.reconnectInterval = null;
         }
+        
+        this.subscribeTopic('/navigation_task/status', 'std_msgs/String');
+        this.subscribeTopic('/obstacle_detection', 'std_msgs/String');
+        console.log('Subscribed to navigation and obstacle detection topics');
       });
 
       this.rosbridge.on('message', (data: WebSocket.Data) => {
@@ -80,6 +88,24 @@ class RosbridgeService {
           if (now - lastSent >= throttleInterval) {
             this.broadcastToClients('ros_message', message);
             this.messageThrottle.set(topic, now);
+            
+            if (topic === '/navigation_task/status' && message.msg) {
+              try {
+                const statusData = JSON.parse(message.msg.data);
+                this.latestNavigationStatus = statusData;
+                this.broadcastToClients('navigation_status', statusData);
+              } catch (e) {
+                console.error('Parse navigation status error:', e);
+              }
+            } else if (topic === '/obstacle_detection' && message.msg) {
+              try {
+                const obstacleData = JSON.parse(message.msg.data);
+                this.latestObstacleStatus = obstacleData;
+                this.broadcastToClients('obstacle_status', obstacleData);
+              } catch (e) {
+                console.error('Parse obstacle detection error:', e);
+              }
+            }
           }
         } catch (error) {
           console.error('Error parsing ROS message:', error);
@@ -170,68 +196,95 @@ class RosbridgeService {
     this.publishTopic(topic, messageType, message);
   }
 
-  // 获取机器人当前位姿
+  // 获取机器人当前位姿（带回退机制）
   public async getRobotPose(): Promise<any> {
-    return new Promise((resolve) => {
-      if (!this.isConnected()) {
-        resolve(null);
-        return;
-      }
+    if (!this.isConnected()) {
+      console.warn('[getRobotPose] Rosbridge not connected');
+      return null;
+    }
 
-      // 尝试从多个可能的位姿话题获取数据
-      const poseTopics = ['/amcl_pose', '/robot_pose'];
+    // 1. 优先尝试 /amcl_pose（全局定位）
+    console.log('[getRobotPose] Trying /amcl_pose first...');
+    const amclPose = await this.tryGetPoseFromTopic('/amcl_pose', 'geometry_msgs/PoseWithCovarianceStamped', 1500);
+    if (amclPose) {
+      console.log('[getRobotPose] Got pose from /amcl_pose (global localization)');
+      return {
+        ...amclPose,
+        source: 'amcl',
+        frame: 'map',
+        reliable: true
+      };
+    }
+
+    // 2. 回退到 /odom（里程计）
+    console.log('[getRobotPose] /amcl_pose unavailable, falling back to /odom...');
+    const odomPose = await this.tryGetPoseFromTopic('/odom', 'nav_msgs/Odometry', 1000);
+    if (odomPose) {
+      console.log('[getRobotPose] Got pose from /odom (odometry)');
+      return {
+        ...odomPose,
+        source: 'odom',
+        frame: 'odom',
+        reliable: false,
+        warning: 'Using odometry - position may drift. Please set initial pose for global localization.'
+      };
+    }
+
+    // 3. 都失败，返回 null
+    console.warn('[getRobotPose] Failed to get pose from both /amcl_pose and /odom');
+    return null;
+  }
+
+  // 辅助函数：从指定话题获取位姿
+  private async tryGetPoseFromTopic(topic: string, messageType: string, timeout: number): Promise<any> {
+    return new Promise((resolve) => {
       let timeoutId: NodeJS.Timeout;
       let messageReceived = false;
 
       const cleanup = () => {
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-        }
-        // 取消订阅
-        poseTopics.forEach(topic => {
-          this.unsubscribeTopic(topic);
-        });
+        if (timeoutId) clearTimeout(timeoutId);
+        this.unsubscribeTopic(topic);
       };
 
-      // 设置超时
       timeoutId = setTimeout(() => {
         if (!messageReceived) {
           cleanup();
           resolve(null);
         }
-      }, 2000); // 2秒超时
+      }, timeout);
 
-      // 创建临时消息处理器
       const tempHandler = (data: WebSocket.Data) => {
         try {
           const message = JSON.parse(data.toString());
-          const topic = message.topic;
-          
-          if (poseTopics.includes(topic) && message.msg && message.msg.pose) {
+          if (message.topic === topic && message.msg) {
             messageReceived = true;
             cleanup();
-            resolve(message.msg.pose);
+            
+            // 处理不同消息类型
+            if (message.msg.pose) {
+              // PoseWithCovarianceStamped 或 Odometry
+              const pose = message.msg.pose.pose || message.msg.pose;
+              resolve(pose);
+            } else {
+              resolve(null);
+            }
           }
         } catch (error) {
-          console.error('Error parsing pose message:', error);
+          console.error(`[tryGetPoseFromTopic] Error parsing ${topic}:`, error);
         }
       };
 
-      // 临时添加消息监听器
       if (this.rosbridge) {
         this.rosbridge.on('message', tempHandler);
-        
-        // 订阅位姿话题
-        poseTopics.forEach(topic => {
-          this.subscribeTopic(topic, 'geometry_msgs/PoseWithCovarianceStamped');
-        });
+        this.subscribeTopic(topic, messageType);
 
-        // 2秒后移除监听器
         setTimeout(() => {
           if (this.rosbridge) {
             this.rosbridge.removeListener('message', tempHandler);
           }
-        }, 2000);
+        }, timeout);
+      } else {
+        resolve(null);
       }
     });
   }

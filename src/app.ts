@@ -19,6 +19,8 @@ import mapRoutes from './routes/maps';
 import scheduleRoutes from './routes/schedules';
 import systemRoutes from './routes/system';
 import userRoutes from './routes/users';
+import navigationRoutes from './routes/navigation';
+import obstacleRoutes from './routes/obstacles';
 
 dotenv.config();
 
@@ -68,6 +70,8 @@ app.use('/api/maps', mapRoutes);
 app.use('/api/schedules', scheduleRoutes);
 app.use('/api/system', systemRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/navigation', navigationRoutes);
+app.use('/api/obstacles', obstacleRoutes);
 
 app.get('/api/health', async (req, res) => {
   const health = {
@@ -87,7 +91,7 @@ app.get('/api/health', async (req, res) => {
   res.json(health);
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3005;
 
 const startServer = async (): Promise<void> => {
   try {

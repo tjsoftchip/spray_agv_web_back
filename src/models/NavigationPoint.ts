@@ -18,7 +18,22 @@ interface NavigationPointAttributes {
     w: number;
   };
   order: number;
-  type: 'start' | 'waypoint' | 'end';
+  type: 'start' | 'waypoint' | 'end' | 'work' | 'charge' | 'water' | 'wait';
+  navigationParams?: {
+    maxSpeed?: number;
+    minSpeed?: number;
+    obstacleDistance?: number;
+    goalTolerance?: number;
+    rotationTolerance?: number;
+  };
+  actionOnArrival?: {
+    type: 'spray' | 'charge' | 'water' | 'wait' | 'none';
+    duration?: number;
+    params?: any;
+  };
+  isTransitionPoint?: boolean;
+  fromYardId?: string;
+  toYardId?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -33,7 +48,22 @@ class NavigationPoint extends Model<NavigationPointAttributes, NavigationPointCr
   public position!: { x: number; y: number; z: number };
   public orientation!: { x: number; y: number; z: number; w: number };
   public order!: number;
-  public type!: 'start' | 'waypoint' | 'end';
+  public type!: 'start' | 'waypoint' | 'end' | 'work' | 'charge' | 'water' | 'wait';
+  public navigationParams?: {
+    maxSpeed?: number;
+    minSpeed?: number;
+    obstacleDistance?: number;
+    goalTolerance?: number;
+    rotationTolerance?: number;
+  };
+  public actionOnArrival?: {
+    type: 'spray' | 'charge' | 'water' | 'wait' | 'none';
+    duration?: number;
+    params?: any;
+  };
+  public isTransitionPoint?: boolean;
+  public fromYardId?: string;
+  public toYardId?: string;
   public readonly createdAt!: Date;
   public readonly updatedAt!: Date;
 }
@@ -73,6 +103,27 @@ NavigationPoint.init(
       type: DataTypes.STRING,
       allowNull: false,
       defaultValue: 'waypoint',
+    },
+    navigationParams: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    actionOnArrival: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    isTransitionPoint: {
+      type: DataTypes.BOOLEAN,
+      allowNull: true,
+      defaultValue: false,
+    },
+    fromYardId: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    toYardId: {
+      type: DataTypes.STRING,
+      allowNull: true,
     },
   },
   {
