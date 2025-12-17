@@ -4,12 +4,15 @@ import * as mapController from '../controllers/mapController';
 
 const router = Router();
 
-// 添加不需要认证的本地状态检查端点
+// 添加不需要认证的本地端点
 router.get('/mapping-status-local', (req, res) => mapController.getMappingStatusLocal(req, res));
 router.post('/start-mapping-local', (req, res) => mapController.startMappingLocal(req, res));
 router.post('/stop-mapping-local', (req, res) => mapController.stopMappingLocal(req, res));
 router.post('/save-local', (req, res) => mapController.saveMapLocal(req, res));
 router.get('/scan-local', (req, res) => mapController.scanLocalMaps(req, res));
+router.delete('/:id/delete-local', (req, res) => mapController.deleteMap(req, res));
+router.put('/:id/set-active-local', (req, res) => mapController.setActiveMap(req, res));
+router.post('/:id/load-local', (req, res) => mapController.loadMap(req, res));
 router.get('/:id/image', (req, res) => mapController.getMapImage(req, res));
 
 router.use(authenticate);

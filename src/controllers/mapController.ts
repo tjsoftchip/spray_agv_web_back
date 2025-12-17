@@ -18,8 +18,34 @@ export const getActiveMap = async (req: Request, res: Response) => {
 
 export const setActiveMap = async (req: Request, res: Response) => {
   try {
-    res.json({ message: 'Active map set' });
+    const { id } = req.params;
+    const fs = require('fs');
+    const path = require('path');
+    
+    const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
+    const yamlPath = path.join(mapsDir, `${id}.yaml`);
+    
+    // 检查地图是否存在
+    if (!fs.existsSync(yamlPath)) {
+      return res.status(404).json({ error: 'Map not found' });
+    }
+    
+    // 保存激活地图信息到状态文件
+    const activeMapState = {
+      activeMapId: id,
+      activeMapPath: yamlPath,
+      setAt: new Date().toISOString()
+    };
+    
+    fs.writeFileSync('/tmp/active_map_state.json', JSON.stringify(activeMapState));
+    console.log(`Set active map to: ${id}`);
+    
+    res.json({ 
+      message: 'Active map set successfully',
+      activeMap: activeMapState
+    });
   } catch (error) {
+    console.error('Error setting active map:', error);
     res.status(500).json({ error: 'Failed to set active map' });
   }
 };
@@ -109,46 +135,66 @@ export const getMapImage = async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'PGM file not found' });
     }
     
-    // 尝试读取PGM文件头获取尺寸
-    let pgmType = '';
-    try {
-      const pgmContent = fs.readFileSync(pgmPath, 'utf8');
-      const pgmLines = pgmContent.split('\n');
-      if (pgmLines[0] && (pgmLines[0] === 'P2' || pgmLines[0] === 'P5')) {
-        pgmType = pgmLines[0];
-        if (pgmLines[1]) {
-          const dimensions = pgmLines[1].split(' ');
-          mapInfo.width = parseInt(dimensions[0]);
-          mapInfo.height = parseInt(dimensions[1]);
-        }
-      }
-    } catch (e) {
-      console.log(`Could not read PGM dimensions for ${id}`);
-    }
-    
-    // 获取PGM文件的实际大小
-    const pgmStats = fs.statSync(pgmPath);
-    console.log(`PGM file size: ${pgmStats.size}, type: ${pgmType}, dimensions: ${mapInfo.width}x${mapInfo.height}`);
-    
-    // 转换PGM到PNG
+    // 读取PGM文件
     const sharp = require('sharp');
     const pgmBuffer = fs.readFileSync(pgmPath);
     
-    // 计算二进制PGM数据的起始位置
+    // 解析PGM文件头
+    let pgmType = '';
     let dataOffset = 0;
-    if (pgmType === 'P5') {
-      // P5格式：跳过头部信息
-      const headerText = pgmBuffer.toString('ascii', 0, Math.min(100, pgmBuffer.length));
-      const headerLines = headerText.split('\n');
-      let offset = 0;
-      for (const line of headerLines) {
-        if (line.startsWith('#')) continue; // 跳过注释
-        offset += Buffer.byteLength(line + '\n', 'ascii');
-        if (line.match(/^\d+ \d+$/)) break; // 找到尺寸行
-        if (line.match(/^\d+$/)) break; // 找到最大值行
-      }
-      dataOffset = offset;
+    let lineCount = 0;
+    let i = 0;
+    
+    // 读取魔数（P2 或 P5）
+    while (i < pgmBuffer.length && pgmBuffer[i] !== 10 && pgmBuffer[i] !== 13) {
+      pgmType += String.fromCharCode(pgmBuffer[i]);
+      i++;
     }
+    
+    // 跳过换行符
+    while (i < pgmBuffer.length && (pgmBuffer[i] === 10 || pgmBuffer[i] === 13)) {
+      i++;
+    }
+    
+    console.log(`PGM type: ${pgmType}`);
+    
+    // 读取后续行（宽度、高度、最大值），跳过注释
+    while (lineCount < 2 && i < pgmBuffer.length) {
+      let line = '';
+      
+      // 读取一行
+      while (i < pgmBuffer.length && pgmBuffer[i] !== 10 && pgmBuffer[i] !== 13) {
+        line += String.fromCharCode(pgmBuffer[i]);
+        i++;
+      }
+      
+      // 跳过换行符
+      while (i < pgmBuffer.length && (pgmBuffer[i] === 10 || pgmBuffer[i] === 13)) {
+        i++;
+      }
+      
+      // 跳过注释行
+      if (line.startsWith('#')) {
+        continue;
+      }
+      
+      // 解析宽度和高度
+      if (lineCount === 0) {
+        const dimensions = line.trim().split(/\s+/);
+        if (dimensions.length >= 2) {
+          mapInfo.width = parseInt(dimensions[0]) || mapInfo.width;
+          mapInfo.height = parseInt(dimensions[1]) || mapInfo.height;
+          lineCount++;
+        }
+      } else if (lineCount === 1) {
+        // 最大值行（通常是 255）
+        lineCount++;
+      }
+    }
+    
+    dataOffset = i;
+    
+    console.log(`PGM dimensions: ${mapInfo.width}x${mapInfo.height}, data offset: ${dataOffset}`);
     
     // 使用Sharp转换PGM到PNG
     const pngBuffer = await sharp(pgmBuffer.slice(dataOffset), { 
@@ -196,8 +242,18 @@ export const getMappingStatusLocal = async (req: Request, res: Response) => {
           res.json({ isMapping: false });
         }
       } else {
-        // 如果没有状态文件，根据进程状态返回
-        res.json({ isMapping: isProcessRunning });
+        // 如果没有状态文件，初始化为 false（默认未建图状态）
+        // 只有在明确检测到进程运行时才返回 true
+        const initialState = { isMapping: false };
+        
+        // 如果检测到进程在运行，创建状态文件并返回 true
+        if (isProcessRunning) {
+          console.log('Detected mapping process running without state file, creating state file...');
+          initialState.isMapping = true;
+          fs.writeFileSync('/tmp/mapping_state.json', JSON.stringify(initialState));
+        }
+        
+        res.json(initialState);
       }
     });
   } catch (error) {
@@ -499,6 +555,17 @@ export const scanLocalMaps = async (req: Request, res: Response) => {
     const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
     const maps = [];
     
+    // 读取激活地图状态
+    let activeMapId = null;
+    if (fs.existsSync('/tmp/active_map_state.json')) {
+      try {
+        const activeMapState = JSON.parse(fs.readFileSync('/tmp/active_map_state.json', 'utf8'));
+        activeMapId = activeMapState.activeMapId;
+      } catch (e) {
+        console.warn('Failed to read active map state:', e);
+      }
+    }
+    
     if (fs.existsSync(mapsDir)) {
       const files = fs.readdirSync(mapsDir);
       const yamlFiles = files.filter((file: string) => file.endsWith('.yaml'));
@@ -509,14 +576,22 @@ export const scanLocalMaps = async (req: Request, res: Response) => {
         
         // 解析YAML文件
         const lines = yamlContent.split('\n');
+        const mapName = path.basename(yamlFile, '.yaml');
+        
+        // 获取文件创建时间
+        const stats = fs.statSync(yamlPath);
+        
         let mapInfo: any = {
-          name: path.basename(yamlFile, '.yaml'),
+          id: mapName,
+          name: mapName,
           yamlPath: yamlPath,
           pgmPath: '',
           resolution: 0.05,
           origin: { x: 0, y: 0, z: 0 },
           width: 1000,
           height: 1000,
+          createdAt: stats.birthtime || stats.mtime,
+          isActive: mapName === activeMapId,
         };
         
         lines.forEach((line: string) => {
@@ -714,16 +789,92 @@ export const saveMap = async (req: Request, res: Response) => {
 
 export const deleteMap = async (req: Request, res: Response) => {
   try {
-    res.json({ message: 'Map deleted' });
+    const { id } = req.params;
+    const fs = require('fs');
+    const path = require('path');
+    
+    const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
+    const yamlPath = path.join(mapsDir, `${id}.yaml`);
+    const pgmPath = path.join(mapsDir, `${id}.pgm`);
+    
+    // 检查文件是否存在
+    if (!fs.existsSync(yamlPath)) {
+      return res.status(404).json({ error: 'Map not found' });
+    }
+    
+    // 删除 YAML 文件
+    if (fs.existsSync(yamlPath)) {
+      fs.unlinkSync(yamlPath);
+      console.log(`Deleted YAML file: ${yamlPath}`);
+    }
+    
+    // 删除 PGM 文件
+    if (fs.existsSync(pgmPath)) {
+      fs.unlinkSync(pgmPath);
+      console.log(`Deleted PGM file: ${pgmPath}`);
+    }
+    
+    res.json({ 
+      message: 'Map deleted successfully',
+      deletedFiles: {
+        yaml: yamlPath,
+        pgm: pgmPath
+      }
+    });
   } catch (error) {
+    console.error('Error deleting map:', error);
     res.status(500).json({ error: 'Failed to delete map' });
   }
 };
 
 export const loadMap = async (req: Request, res: Response) => {
   try {
-    res.json({ message: 'Map loaded' });
+    const { id } = req.params;
+    const fs = require('fs');
+    const path = require('path');
+    const { spawn } = require('child_process');
+    
+    const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
+    const yamlPath = path.join(mapsDir, `${id}.yaml`);
+    
+    // 检查地图是否存在
+    if (!fs.existsSync(yamlPath)) {
+      return res.status(404).json({ error: 'Map not found' });
+    }
+    
+    // 设置为激活地图
+    const activeMapState = {
+      activeMapId: id,
+      activeMapPath: yamlPath,
+      setAt: new Date().toISOString()
+    };
+    fs.writeFileSync('/tmp/active_map_state.json', JSON.stringify(activeMapState));
+    
+    // 启动导航系统（这会自动加载激活的地图）
+    // 注意：实际的导航启动逻辑可能需要根据具体情况调整
+    const workspacePath = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws';
+    const setupCommand = `source ${workspacePath}/install/setup.bash && `;
+    
+    // 这里只是设置激活地图，实际加载由导航系统完成
+    // 如果需要立即启动导航，可以取消下面的注释
+    /*
+    spawn('bash', ['-c', 
+      setupCommand + `ros2 launch yahboomcar_nav navigation_dwa_launch.py map:=${yamlPath}`
+    ], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      detached: true
+    });
+    */
+    
+    console.log(`Map loaded: ${id}`);
+    
+    res.json({ 
+      message: 'Map loaded successfully',
+      mapId: id,
+      mapPath: yamlPath
+    });
   } catch (error) {
+    console.error('Error loading map:', error);
     res.status(500).json({ error: 'Failed to load map' });
   }
 };
