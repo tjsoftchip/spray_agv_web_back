@@ -10,6 +10,7 @@ router.post('/start-mapping-local', (req, res) => mapController.startMappingLoca
 router.post('/stop-mapping-local', (req, res) => mapController.stopMappingLocal(req, res));
 router.post('/save-local', (req, res) => mapController.saveMapLocal(req, res));
 router.get('/scan-local', (req, res) => mapController.scanLocalMaps(req, res));
+router.get('/active-local', (req, res) => mapController.getActiveMap(req, res));
 router.delete('/:id/delete-local', (req, res) => mapController.deleteMap(req, res));
 router.put('/:id/set-active-local', (req, res) => mapController.setActiveMap(req, res));
 router.post('/:id/load-local', (req, res) => mapController.loadMap(req, res));

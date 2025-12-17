@@ -10,8 +10,46 @@ export const getMaps = async (req: Request, res: Response) => {
 
 export const getActiveMap = async (req: Request, res: Response) => {
   try {
+    const MapModel = require('../models/Map').default;
+    const fs = require('fs');
+    
+    // 首先从数据库查找激活的地图
+    let activeMap = await MapModel.findOne({ where: { isActive: true } });
+    
+    if (activeMap) {
+      console.log('Active map found in database:', activeMap.id);
+      return res.json(activeMap);
+    }
+    
+    // 如果数据库中没有，尝试从状态文件读取
+    if (fs.existsSync('/tmp/active_map_state.json')) {
+      try {
+        const state = JSON.parse(fs.readFileSync('/tmp/active_map_state.json', 'utf8'));
+        console.log('Active map found in state file:', state.activeMapId);
+        
+        // 尝试从数据库获取完整信息
+        const mapFromDb = await MapModel.findOne({ where: { id: state.activeMapId } });
+        if (mapFromDb) {
+          return res.json(mapFromDb);
+        }
+        
+        // 返回基本信息
+        return res.json({
+          id: state.activeMapId,
+          name: state.activeMapId,
+          yamlPath: state.activeMapPath,
+          isActive: true
+        });
+      } catch (e) {
+        console.error('Failed to read active map state:', e);
+      }
+    }
+    
+    // 如果都没有，返回 null
+    console.log('No active map found');
     res.json(null);
   } catch (error) {
+    console.error('Error fetching active map:', error);
     res.status(500).json({ error: 'Failed to fetch active map' });
   }
 };
@@ -21,6 +59,7 @@ export const setActiveMap = async (req: Request, res: Response) => {
     const { id } = req.params;
     const fs = require('fs');
     const path = require('path');
+    const MapModel = require('../models/Map').default;
     
     const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
     const yamlPath = path.join(mapsDir, `${id}.yaml`);
@@ -30,7 +69,92 @@ export const setActiveMap = async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Map not found' });
     }
     
-    // 保存激活地图信息到状态文件
+    // 更新数据库：将所有地图设置为非激活
+    await MapModel.update({ isActive: false }, { where: {} });
+    
+    // 查找或创建地图记录
+    let mapRecord = await MapModel.findOne({ where: { id } });
+    
+    if (!mapRecord) {
+      // 如果数据库中没有记录，创建一个新记录
+      const yamlContent = fs.readFileSync(yamlPath, 'utf8');
+      const lines = yamlContent.split('\n');
+      let pgmPath = '';
+      let resolution = 0.05;
+      let origin = { x: 0, y: 0, z: 0 };
+      
+      lines.forEach((line: string) => {
+        if (line.startsWith('image:')) {
+          const imageName = line.split(':')[1].trim();
+          pgmPath = path.join(mapsDir, imageName);
+        } else if (line.startsWith('resolution:')) {
+          resolution = parseFloat(line.split(':')[1].trim()) || 0.05;
+        } else if (line.startsWith('origin:')) {
+          try {
+            const originStr = line.split(':')[1].trim();
+            const originArray = JSON.parse(originStr);
+            if (Array.isArray(originArray) && originArray.length >= 2) {
+              origin = {
+                x: parseFloat(originArray[0]) || 0,
+                y: parseFloat(originArray[1]) || 0,
+                z: parseFloat(originArray[2]) || 0
+              };
+            }
+          } catch (e) {
+            console.error('Failed to parse origin:', e);
+          }
+        }
+      });
+      
+      // 读取PGM文件获取尺寸
+      let width = 1000;
+      let height = 1000;
+      if (fs.existsSync(pgmPath)) {
+        const pgmBuffer = fs.readFileSync(pgmPath);
+        let i = 0;
+        let lineCount = 0;
+        
+        // 跳过魔数
+        while (i < pgmBuffer.length && pgmBuffer[i] !== 10 && pgmBuffer[i] !== 13) i++;
+        while (i < pgmBuffer.length && (pgmBuffer[i] === 10 || pgmBuffer[i] === 13)) i++;
+        
+        // 读取宽度和高度
+        while (lineCount < 1 && i < pgmBuffer.length) {
+          let line = '';
+          while (i < pgmBuffer.length && pgmBuffer[i] !== 10 && pgmBuffer[i] !== 13) {
+            line += String.fromCharCode(pgmBuffer[i]);
+            i++;
+          }
+          while (i < pgmBuffer.length && (pgmBuffer[i] === 10 || pgmBuffer[i] === 13)) i++;
+          
+          if (line.startsWith('#')) continue;
+          
+          const dimensions = line.trim().split(/\s+/);
+          if (dimensions.length >= 2) {
+            width = parseInt(dimensions[0]) || width;
+            height = parseInt(dimensions[1]) || height;
+            lineCount++;
+          }
+        }
+      }
+      
+      mapRecord = await MapModel.create({
+        id,
+        name: id,
+        yamlPath,
+        pgmPath,
+        resolution,
+        width,
+        height,
+        origin,
+        isActive: true
+      });
+    } else {
+      // 更新现有记录
+      await mapRecord.update({ isActive: true });
+    }
+    
+    // 保存激活地图信息到状态文件（用于兼容性）
     const activeMapState = {
       activeMapId: id,
       activeMapPath: yamlPath,
@@ -38,7 +162,7 @@ export const setActiveMap = async (req: Request, res: Response) => {
     };
     
     fs.writeFileSync('/tmp/active_map_state.json', JSON.stringify(activeMapState));
-    console.log(`Set active map to: ${id}`);
+    console.log(`Set active map to: ${id} (database and state file updated)`);
     
     res.json({ 
       message: 'Active map set successfully',
