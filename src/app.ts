@@ -7,6 +7,7 @@ import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { initDatabase } from './models';
 import rosbridgeService from './services/rosbridgeService';
+import scheduleService from './services/scheduleService';
 
 import authRoutes from './routes/auth';
 import templateRoutes from './routes/templates';
@@ -16,7 +17,7 @@ import robotRoutes from './routes/robot';
 import beamYardRoutes from './routes/beamYards';
 import taskQueueRoutes from './routes/taskQueue';
 import mapRoutes from './routes/maps';
-import scheduleRoutes from './routes/schedules';
+// import scheduleRoutes from './routes/schedules'; // 已合并到任务管理
 import systemRoutes from './routes/system';
 import userRoutes from './routes/users';
 import navigationRoutes from './routes/navigation';
@@ -67,7 +68,7 @@ app.use('/api/robot', robotRoutes);
 app.use('/api/beam-yards', beamYardRoutes);
 app.use('/api/task-queue', taskQueueRoutes);
 app.use('/api/maps', mapRoutes);
-app.use('/api/schedules', scheduleRoutes);
+// app.use('/api/schedules', scheduleRoutes); // 已合并到任务管理
 app.use('/api/system', systemRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/navigation', navigationRoutes);
@@ -100,6 +101,9 @@ const startServer = async (): Promise<void> => {
 
     rosbridgeService.initialize(io);
     console.log('Rosbridge service initialized');
+
+    scheduleService.start();
+    console.log('Schedule service started');
 
     httpServer.listen(PORT, () => {
       console.log(`Server is running on port ${PORT}`);

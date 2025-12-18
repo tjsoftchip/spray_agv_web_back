@@ -21,7 +21,8 @@ class RosbridgeService {
     '/tf': 50,
     '/tf_static': 1000, // 静态tf消息限制在1s
     '/navigation_task/status': 200, // 导航状态200ms
-    '/obstacle_detection': 100 // 障碍物检测100ms
+    '/obstacle_detection': 100, // 障碍物检测100ms
+    '/camera/color/image_raw/compressed': 500 // 相机图像限制在500ms (2fps)
   };
 
   constructor() {

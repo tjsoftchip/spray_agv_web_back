@@ -9,6 +9,16 @@ interface TaskAttributes {
   priority: number;
   templateIds: string[];
   transitionSequence: string[];
+  executionType: 'manual' | 'scheduled' | 'queue';
+  scheduleConfig?: {
+    scheduleType: 'once' | 'daily' | 'weekly' | 'monthly' | 'cron';
+    startTime: string;
+    endTime?: string;
+    repeatInterval?: number;
+    daysOfWeek?: number[];
+    cronExpression?: string;
+  };
+  isScheduleEnabled: boolean;
   operationFrequency: {
     type: 'daily' | 'weekly' | 'custom';
     interval: number;
@@ -61,6 +71,16 @@ class Task extends Model<TaskAttributes, TaskCreationAttributes> implements Task
   public priority!: number;
   public templateIds!: string[];
   public transitionSequence!: string[];
+  public executionType!: 'manual' | 'scheduled' | 'queue';
+  public scheduleConfig?: {
+    scheduleType: 'once' | 'daily' | 'weekly' | 'monthly' | 'cron';
+    startTime: string;
+    endTime?: string;
+    repeatInterval?: number;
+    daysOfWeek?: number[];
+    cronExpression?: string;
+  };
+  public isScheduleEnabled!: boolean;
   public operationFrequency!: {
     type: 'daily' | 'weekly' | 'custom';
     interval: number;
@@ -137,6 +157,20 @@ Task.init(
       type: DataTypes.JSON,
       allowNull: false,
       defaultValue: [],
+    },
+    executionType: {
+      type: DataTypes.ENUM('manual', 'scheduled', 'queue'),
+      allowNull: false,
+      defaultValue: 'manual',
+    },
+    scheduleConfig: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    isScheduleEnabled: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
     },
     operationFrequency: {
       type: DataTypes.JSON,

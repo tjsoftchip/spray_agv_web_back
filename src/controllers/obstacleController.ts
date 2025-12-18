@@ -9,10 +9,13 @@ export const getObstacleStatus = async (req: AuthRequest, res: Response): Promis
     if (!latestStatus) {
       res.json({
         status: 'UNKNOWN',
-        message: 'No obstacle detection data available',
+        message: '等待检测数据',
         laser_detected: false,
         camera_detected: false,
-        timestamp: new Date(),
+        closest_laser_distance: null,
+        closest_depth_distance: null,
+        action: 'continue',
+        timestamp: Date.now(),
       });
       return;
     }
@@ -20,7 +23,7 @@ export const getObstacleStatus = async (req: AuthRequest, res: Response): Promis
     res.json(latestStatus);
   } catch (error) {
     console.error('Get obstacle status error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: '服务器内部错误' });
   }
 };
 
@@ -51,11 +54,11 @@ export const configObstacleDetection = async (req: AuthRequest, res: Response): 
 
     res.json({
       success: true,
-      message: 'Obstacle detection configured',
+      message: '障碍物检测配置已更新',
       params,
     });
   } catch (error) {
     console.error('Config obstacle detection error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: '服务器内部错误' });
   }
 };
