@@ -110,6 +110,8 @@ export const addNavigationPoint = async (req: AuthRequest, res: Response): Promi
     const newPoint = {
       id: `nav_${Date.now()}`,
       ...req.body,
+      // 自动设置默认朝向（朝向东）
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
     };
 
     navigationPoints.push(newPoint);
@@ -144,7 +146,15 @@ export const updateNavigationPoint = async (req: AuthRequest, res: Response): Pr
       return;
     }
 
-    navigationPoints[pointIndex] = { ...navigationPoints[pointIndex], ...req.body };
+    const existingPoint = navigationPoints[pointIndex];
+    const updatedPoint = { ...existingPoint, ...req.body };
+    
+    // 如果更新请求中没有朝向信息，保持原有朝向
+    if (!req.body.orientation) {
+      updatedPoint.orientation = existingPoint.orientation || { x: 0, y: 0, z: 0, w: 1 };
+    }
+
+    navigationPoints[pointIndex] = updatedPoint;
     
     template.set('navigationPoints', navigationPoints);
     template.changed('navigationPoints', true);
@@ -501,19 +511,9 @@ export const validateNavigation = async (req: AuthRequest, res: Response): Promi
         issues.push({ pointId: point.id, issue: '位置坐标不完整' });
       }
       
-      if (!point.orientation || point.orientation.w === undefined) {
-        issues.push({ pointId: point.id, issue: '朝向数据不完整' });
-      }
-      
-      const qNorm = Math.sqrt(
-        Math.pow(point.orientation.x, 2) +
-        Math.pow(point.orientation.y, 2) +
-        Math.pow(point.orientation.z, 2) +
-        Math.pow(point.orientation.w, 2)
-      );
-      
-      if (Math.abs(qNorm - 1.0) > 0.01) {
-        issues.push({ pointId: point.id, issue: '四元数未归一化' });
+      // 确保朝向存在，如果不存在则设置默认值
+      if (!point.orientation) {
+        point.orientation = { x: 0, y: 0, z: 0, w: 1 };
       }
     }
 
@@ -523,6 +523,163 @@ export const validateNavigation = async (req: AuthRequest, res: Response): Promi
     });
   } catch (error) {
     console.error('Validate navigation error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// 设置初始位置功能
+export const setInitialPose = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { x, y, theta } = req.body;
+    
+    // 验证输入参数
+    if (typeof x !== 'number' || typeof y !== 'number' || typeof theta !== 'number') {
+      res.status(400).json({ error: 'Invalid parameters. x, y, and theta must be numbers' });
+      return;
+    }
+
+    // 将角度转换为四元数
+    const halfYaw = theta / 2;
+    const w = Math.cos(halfYaw);
+    const z = Math.sin(halfYaw);
+
+    // 构建初始位姿消息
+    const initialPose = {
+      pose: {
+        pose: {
+          position: {
+            x: x,
+            y: y,
+            z: 0.0
+          },
+          orientation: {
+            x: 0.0,
+            y: 0.0,
+            z: z,
+            w: w
+          }
+        },
+        covariance: [0.25, 0.0, 0.0, 0.0, 0.0, 0.0,
+                     0.0, 0.25, 0.0, 0.0, 0.0, 0.0,
+                     0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                     0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                     0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                     0.0, 0.0, 0.0, 0.0, 0.0, 0.06853892326654787]
+      }
+    };
+
+    // 通过rosbridge发送初始位姿
+    const rosbridgeService = require('../services/rosbridgeService').default;
+    
+    if (!rosbridgeService.isConnected()) {
+      res.status(503).json({ error: 'ROS bridge not connected' });
+      return;
+    }
+
+    // 发布初始位姿到 /initialpose 话题
+    rosbridgeService.publish('/initialpose', 'geometry_msgs/PoseWithCovarianceStamped', {
+      header: {
+        stamp: { sec: 0, nanosec: 0 },
+        frame_id: 'map'
+      },
+      ...initialPose
+    });
+
+    // 同时调用AMCL的set_initial_pose服务
+    rosbridgeService.callService('/amcl/set_initial_pose', 'nav2_msgs/srv/SetInitialPose', {
+      pose: {
+        header: {
+          stamp: { sec: 0, nanosec: 0 },
+          frame_id: 'map'
+        },
+        pose: {
+          position: {
+            x: x,
+            y: y,
+            z: 0.0
+          },
+          orientation: {
+            x: 0.0,
+            y: 0.0,
+            z: z,
+            w: w
+          }
+        }
+      }
+    });
+
+    console.log(`Initial pose set: x=${x}, y=${y}, theta=${theta} (${theta * 180 / Math.PI}°)`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Initial pose set successfully',
+      position: { x, y },
+      orientation: { theta: theta, degrees: theta * 180 / Math.PI }
+    });
+  } catch (error) {
+    console.error('Set initial pose error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// 获取初始位置状态
+export const getInitialPoseStatus = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const rosbridgeService = require('../services/rosbridgeService').default;
+    
+    if (!rosbridgeService.isConnected()) {
+      res.status(503).json({ error: 'ROS bridge not connected' });
+      return;
+    }
+
+    // 获取当前机器人位姿
+    const currentPose = await rosbridgeService.getRobotPose();
+    
+    if (!currentPose) {
+      res.json({
+        initialized: false,
+        message: 'Robot pose not available. Please set initial pose.',
+        currentPose: null
+      });
+      return;
+    }
+
+    // 检查位姿来源
+    const isInitialized = currentPose.source === 'amcl';
+    
+    // 提取位置和方向信息
+    const position = {
+      x: currentPose.position?.x || 0,
+      y: currentPose.position?.y || 0,
+      z: currentPose.position?.z || 0
+    };
+
+    const orientation = {
+      x: currentPose.orientation?.x || 0,
+      y: currentPose.orientation?.y || 0,
+      z: currentPose.orientation?.z || 0,
+      w: currentPose.orientation?.w || 1
+    };
+
+    // 计算偏航角
+    const theta = Math.atan2(2 * (orientation.w * orientation.z), 1 - 2 * (orientation.z * orientation.z));
+    
+    res.json({
+      initialized: isInitialized,
+      source: currentPose.source,
+      reliable: currentPose.reliable,
+      message: isInitialized ? 'Robot pose initialized' : 'Using odometry - please set initial pose for better accuracy',
+      currentPose: {
+        position,
+        orientation: {
+          quaternion: orientation,
+          theta: theta,
+          degrees: theta * 180 / Math.PI
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get initial pose status error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };

@@ -10,25 +10,20 @@ interface TaskAttributes {
   templateIds: string[];
   transitionSequence: string[];
   executionType: 'manual' | 'scheduled' | 'queue';
+  operationType: 'single' | 'scheduled';
   scheduleConfig?: {
-    scheduleType: 'once' | 'daily' | 'weekly' | 'monthly' | 'cron';
-    startTime: string;
-    endTime?: string;
-    repeatInterval?: number;
-    daysOfWeek?: number[];
-    cronExpression?: string;
+    type: 'once' | 'daily' | 'weekly';
+    time: string;
+    weekdays?: number[];
   };
   isScheduleEnabled: boolean;
-  operationFrequency: {
-    type: 'daily' | 'weekly' | 'custom';
-    interval: number;
-    startTime: string;
-    endTime: string;
+  initialPosition?: {
+    x: number;
+    y: number;
+    theta: number;
   };
   executionParams: {
     operationSpeed: number;
-    sprayDuration: number;
-    repeatCount: number;
   };
   createdBy: string;
   startTime?: Date;
@@ -72,25 +67,20 @@ class Task extends Model<TaskAttributes, TaskCreationAttributes> implements Task
   public templateIds!: string[];
   public transitionSequence!: string[];
   public executionType!: 'manual' | 'scheduled' | 'queue';
+  public operationType!: 'single' | 'scheduled';
   public scheduleConfig?: {
-    scheduleType: 'once' | 'daily' | 'weekly' | 'monthly' | 'cron';
-    startTime: string;
-    endTime?: string;
-    repeatInterval?: number;
-    daysOfWeek?: number[];
-    cronExpression?: string;
+    type: 'once' | 'daily' | 'weekly';
+    time: string;
+    weekdays?: number[];
   };
   public isScheduleEnabled!: boolean;
-  public operationFrequency!: {
-    type: 'daily' | 'weekly' | 'custom';
-    interval: number;
-    startTime: string;
-    endTime: string;
+  public initialPosition?: {
+    x: number;
+    y: number;
+    theta: number;
   };
   public executionParams!: {
     operationSpeed: number;
-    sprayDuration: number;
-    repeatCount: number;
   };
   public createdBy!: string;
   public startTime?: Date;
@@ -172,9 +162,14 @@ Task.init(
       allowNull: false,
       defaultValue: false,
     },
-    operationFrequency: {
-      type: DataTypes.JSON,
+    operationType: {
+      type: DataTypes.ENUM('single', 'scheduled'),
       allowNull: false,
+      defaultValue: 'single',
+    },
+    initialPosition: {
+      type: DataTypes.JSON,
+      allowNull: true,
     },
     executionParams: {
       type: DataTypes.JSON,

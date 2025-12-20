@@ -7,11 +7,6 @@ interface TemplateAttributes {
   description: string;
   yardId: string;
   yardName: string;
-  yardShape: 'rectangle' | 'custom';
-  yardDimensions: {
-    length: number;
-    width: number;
-  };
   defaultMapId?: string;
   navigationPoints: Array<{
     id: string;
@@ -35,7 +30,6 @@ interface TemplateAttributes {
     };
     operationSpeed: number;
   }>;
-  version: string;
   isActive: boolean;
   createdAt?: Date;
   updatedAt?: Date;
@@ -49,8 +43,6 @@ class Template extends Model<TemplateAttributes, TemplateCreationAttributes> imp
   public description!: string;
   public yardId!: string;
   public yardName!: string;
-  public yardShape!: 'rectangle' | 'custom';
-  public yardDimensions!: { length: number; width: number };
   public defaultMapId?: string;
   public navigationPoints!: Array<{
     id: string;
@@ -74,7 +66,6 @@ class Template extends Model<TemplateAttributes, TemplateCreationAttributes> imp
     };
     operationSpeed: number;
   }>;
-  public version!: string;
   public isActive!: boolean;
   public readonly createdAt!: Date;
   public readonly updatedAt!: Date;
@@ -103,15 +94,6 @@ Template.init(
       type: DataTypes.STRING,
       allowNull: false,
     },
-    yardShape: {
-      type: DataTypes.ENUM('rectangle', 'custom'),
-      allowNull: false,
-      defaultValue: 'rectangle',
-    },
-    yardDimensions: {
-      type: DataTypes.JSON,
-      allowNull: false,
-    },
     defaultMapId: {
       type: DataTypes.STRING,
       allowNull: true,
@@ -125,11 +107,6 @@ Template.init(
       type: DataTypes.JSON,
       allowNull: false,
       defaultValue: [],
-    },
-    version: {
-      type: DataTypes.STRING,
-      allowNull: false,
-      defaultValue: '1.0',
     },
     isActive: {
       type: DataTypes.BOOLEAN,

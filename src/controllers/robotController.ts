@@ -76,10 +76,15 @@ export const startNavigation = async (req: Request, res: Response) => {
   try {
     const { goal } = req.body;
     
+    // 获取当前时间戳
+    const now = Date.now();
+    const sec = Math.floor(now / 1000);
+    const nanosec = (now % 1000) * 1000000;
+    
     // 使用话题发布导航目标，而不是服务调用
     const goalMessage = {
       header: {
-        stamp: { sec: 0, nanosec: 0 },
+        stamp: { sec, nanosec },
         frame_id: 'map'
       },
       pose: {

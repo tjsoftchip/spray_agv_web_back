@@ -15,6 +15,12 @@ const models = {
   Template,
   Task,
   SupplyStation,
+  BeamYard,
+  NavigationPoint,
+  RoadSegment,
+  TaskQueue,
+  MapModel,
+  Schedule,
 };
 
 // 定义模型关联
@@ -32,6 +38,7 @@ export const initDatabase = async (): Promise<void> => {
     await sequelize.authenticate();
     console.log('Database connection established successfully.');
     
+    // 简单同步，不进行alter操作
     await sequelize.sync({ force: false });
     console.log('Database models synchronized.');
     
@@ -46,7 +53,8 @@ export const initDatabase = async (): Promise<void> => {
     }
   } catch (error) {
     console.error('Unable to connect to the database:', error);
-    throw error;
+    // 不抛出错误，让服务继续启动
+    console.log('Database sync failed, but continuing with startup...');
   }
 };
 

@@ -19,6 +19,9 @@ import {
   deleteRoadSegment,
   // 机器人位置
   getCurrentRobotPosition,
+  // 初始位置设置
+  setInitialPose,
+  getInitialPoseStatus,
   // 路径预览和验证
   generatePathPreview,
   validateNavigation,
@@ -51,6 +54,10 @@ router.delete('/:templateId/road-segments/:segmentId', authenticate, clearCacheM
 
 // 机器人位置
 router.get('/robot/current-position', authenticate, getCurrentRobotPosition);
+
+// 初始位置设置
+router.post('/initial-pose', authenticate, authorize('admin', 'operator'), setInitialPose);
+router.get('/initial-pose/status', authenticate, getInitialPoseStatus);
 
 // 路径预览和验证
 router.post('/:id/generate-path-preview', authenticate, generatePathPreview);

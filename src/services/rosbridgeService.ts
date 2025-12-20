@@ -95,6 +95,15 @@ class RosbridgeService {
                 const statusData = JSON.parse(message.msg.data);
                 this.latestNavigationStatus = statusData;
                 this.broadcastToClients('navigation_status', statusData);
+                
+                // 处理导航目标到达和失败事件
+                if (statusData.status === 'goal_reached' && statusData.task_id) {
+                  const taskExecutionService = require('./taskExecutionService').default;
+                  taskExecutionService.onNavigationGoalReached(statusData.task_id);
+                } else if (statusData.status === 'goal_failed' && statusData.task_id) {
+                  const taskExecutionService = require('./taskExecutionService').default;
+                  taskExecutionService.onNavigationGoalFailed(statusData.task_id, statusData.reason || 'Unknown error');
+                }
               } catch (e) {
                 console.error('Parse navigation status error:', e);
               }

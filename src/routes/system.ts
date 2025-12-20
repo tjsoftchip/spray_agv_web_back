@@ -1,22 +1,27 @@
 import { Router } from 'express';
 import * as systemController from '../controllers/systemController';
-import { authenticate } from '../middleware/auth';
 
 const router = Router();
 
-router.use(authenticate);
+// 获取系统状态
+router.get('/status', systemController.getSystemStatus);
 
-router.post('/nodes/chassis/start', systemController.startChassis);
-router.post('/nodes/chassis/stop', systemController.stopChassis);
-router.post('/nodes/camera/start', systemController.startCamera);
-router.post('/nodes/camera/stop', systemController.stopCamera);
-router.post('/nodes/laser/start', systemController.startLaser);
-router.post('/nodes/laser/stop', systemController.stopLaser);
-router.post('/nodes/perception/start', systemController.startPerception);
-router.post('/nodes/perception/stop', systemController.stopPerception);
+// 获取当前模式
+router.get('/mode', systemController.getCurrentModeApi);
 
-router.get('/config', systemController.getConfig);
-router.put('/config', systemController.updateConfig);
-router.get('/logs', systemController.getLogs);
+// 切换系统模式
+router.post('/switch-mode', systemController.switchMode);
+
+// 重启系统层
+router.post('/restart-layer', systemController.restartLayer);
+
+// 获取系统日志
+router.get('/logs', systemController.getSystemLogs);
+
+// 获取节点列表
+router.get('/nodes', systemController.getNodeList);
+
+// 获取话题列表
+router.get('/topics', systemController.getTopicList);
 
 export default router;

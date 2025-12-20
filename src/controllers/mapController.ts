@@ -366,18 +366,11 @@ export const getMappingStatusLocal = async (req: Request, res: Response) => {
           res.json({ isMapping: false });
         }
       } else {
-        // 如果没有状态文件，初始化为 false（默认未建图状态）
-        // 只有在明确检测到进程运行时才返回 true
-        const initialState = { isMapping: false };
-        
-        // 如果检测到进程在运行，创建状态文件并返回 true
-        if (isProcessRunning) {
-          console.log('Detected mapping process running without state file, creating state file...');
-          initialState.isMapping = true;
-          fs.writeFileSync('/tmp/mapping_state.json', JSON.stringify(initialState));
-        }
-        
-        res.json(initialState);
+        // 如果没有状态文件，始终返回 false
+        // 不要因为检测到进程就自动设置为建图状态
+        // 因为导航等其他功能也可能启动 cartographer
+        console.log('No mapping state file found, returning isMapping=false');
+        res.json({ isMapping: false });
       }
     });
   } catch (error) {
@@ -399,24 +392,39 @@ export const startMappingLocal = async (req: Request, res: Response) => {
     const { spawn, exec } = require('child_process');
     const fs = require('fs');
     
-    // 清理所有建图相关进程（包括被建图节点自动启动的节点）
-    console.log('Cleaning up old mapping processes...');
-    exec('pkill -f "map_cartographer_launch.py" 2>/dev/null', { shell: true });
-    exec('pkill -f "robot_pose_publisher" 2>/dev/null', { shell: true });
-    exec('pkill -f "laserscan_to_point" 2>/dev/null', { shell: true });
-    exec('pkill -f "yahboom_app_save_map" 2>/dev/null', { shell: true });
-    exec('pkill -f "yahboomcar_bringup_R2_launch.py" 2>/dev/null', { shell: true });
-    exec('pkill -f "Ackman_driver_R2" 2>/dev/null', { shell: true });
-    exec('pkill -f "ydlidar_ros2_driver" 2>/dev/null', { shell: true });
-    exec('pkill -f "cartographer_node" 2>/dev/null', { shell: true });
-    exec('pkill -f "cartographer_occupancy_grid_node" 2>/dev/null', { shell: true });
-    exec('pkill -f "joint_state_publisher" 2>/dev/null', { shell: true });
-    exec('pkill -f "joy_ctrl" 2>/dev/null', { shell: true });
-    exec('pkill -f "joy_node" 2>/dev/null', { shell: true });
-    exec('pkill -f "static_transform_publisher" 2>/dev/null', { shell: true });
+    // 使用新的模式切换系统
+    console.log('Switching to mapping mode using system manager...');
     
-    // 等待进程清理
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    const projectDir = process.cwd();
+    const switchScript = `${projectDir}/switch_mode.sh`;
+    
+    // 切换到建图模式
+    const switchChild = spawn('bash', [switchScript, 'mapping'], {
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    
+    let stdout = '';
+    let stderr = '';
+    
+    switchChild.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
+    
+    switchChild.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+    
+    switchChild.on('exit', (code: number | null) => {
+      if (code === 0) {
+        console.log('Successfully switched to mapping mode');
+      } else {
+        console.error('Failed to switch to mapping mode:', stderr);
+      }
+    });
+    
+    // 等待模式切换完成
+    await new Promise(resolve => setTimeout(resolve, 5000));
     
     // 确保日志文件存在
     fs.writeFileSync('/tmp/mapping.log', `Mapping started at ${new Date().toISOString()}\n`);
@@ -577,54 +585,44 @@ export const startMappingLocal = async (req: Request, res: Response) => {
 
 export const stopMappingLocal = async (req: Request, res: Response) => {
   try {
-    const { exec } = require('child_process');
+    const { spawn, exec } = require('child_process');
     const fs = require('fs');
     
     console.log('Stopping local mapping...');
     
-    // 停止所有建图相关进程（包括被建图节点自动启动的节点）
-    console.log('Stopping map save service...');
-    exec('pkill -f "yahboom_app_save_map" 2>/dev/null', { shell: true });
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // 使用新的模式切换系统切换到待机模式
+    console.log('Switching to idle mode using system manager...');
     
-    console.log('Stopping laser scan to point cloud...');
-    exec('pkill -f "laserscan_to_point" 2>/dev/null', { shell: true });
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    const projectDir = process.cwd();
+    const switchScript = `${projectDir}/switch_mode.sh`;
     
-    console.log('Stopping robot pose publisher...');
-    exec('pkill -f "robot_pose_publisher" 2>/dev/null', { shell: true });
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // 切换到待机模式
+    const switchChild = spawn('bash', [switchScript, 'idle'], {
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
     
-    console.log('Stopping cartographer mapping...');
-    exec('pkill -f "map_cartographer_launch.py" 2>/dev/null', { shell: true });
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    let stdout = '';
+    let stderr = '';
     
-    // 停止被建图节点自动启动的依赖节点
-    console.log('Stopping auto-started dependencies...');
-    exec('pkill -f "yahboomcar_bringup_R2_launch.py" 2>/dev/null', { shell: true });
-    exec('pkill -f "Ackman_driver_R2" 2>/dev/null', { shell: true });
-    exec('pkill -f "ydlidar_ros2_driver" 2>/dev/null', { shell: true });
-    exec('pkill -f "cartographer_node" 2>/dev/null', { shell: true });
-    exec('pkill -f "cartographer_occupancy_grid_node" 2>/dev/null', { shell: true });
-    // 停止建图相关的其他节点
-    exec('pkill -f "joint_state_publisher" 2>/dev/null', { shell: true });
-    exec('pkill -f "joy_ctrl" 2>/dev/null', { shell: true });
-    exec('pkill -f "joy_node" 2>/dev/null', { shell: true });
-    exec('pkill -f "static_transform_publisher" 2>/dev/null', { shell: true });
-    exec('pkill -f "robot_state_publisher" 2>/dev/null', { shell: true });
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    switchChild.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
     
-    // 强制杀死所有残留进程
-    console.log('Force killing any remaining processes...');
-    exec('pkill -9 -f "cartographer" 2>/dev/null', { shell: true });
-    exec('pkill -9 -f "yahboomcar_bringup" 2>/dev/null', { shell: true });
-    exec('pkill -9 -f "ydlidar" 2>/dev/null', { shell: true });
-    exec('pkill -9 -f "Ackman" 2>/dev/null', { shell: true });
-    exec('pkill -9 -f "joint_state_publisher" 2>/dev/null', { shell: true });
-    exec('pkill -9 -f "joy_ctrl" 2>/dev/null', { shell: true });
-    exec('pkill -9 -f "joy_node" 2>/dev/null', { shell: true });
-    exec('pkill -9 -f "static_transform_publisher" 2>/dev/null', { shell: true });
-    exec('pkill -9 -f "robot_state_publisher" 2>/dev/null', { shell: true });
+    switchChild.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+    
+    switchChild.on('exit', (code: number | null) => {
+      if (code === 0) {
+        console.log('Successfully switched to idle mode');
+      } else {
+        console.error('Failed to switch to idle mode:', stderr);
+      }
+    });
+    
+    // 等待模式切换完成
+    await new Promise(resolve => setTimeout(resolve, 3000));
     
     // 更新状态
     fs.writeFileSync('/tmp/mapping_state.json', JSON.stringify({
