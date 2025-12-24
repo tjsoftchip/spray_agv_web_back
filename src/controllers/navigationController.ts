@@ -13,9 +13,62 @@ export const startNavigation = async (req: AuthRequest, res: Response): Promise<
       return;
     }
 
+    // 检查当前系统模式，如果不是导航模式则切换
+    const { spawn } = require('child_process');
+    const fs = require('fs');
+    
+    const currentMode = fs.existsSync('/tmp/robot_system_mode') 
+      ? fs.readFileSync('/tmp/robot_system_mode', 'utf8').trim() 
+      : 'unknown';
+    
+    if (currentMode !== 'navigation') {
+      console.log(`Switching from ${currentMode} to navigation mode...`);
+      
+      const projectDir = process.cwd();
+      const switchScript = `${projectDir}/switch_mode.sh`;
+      
+      // 切换到导航模式
+      const switchChild = spawn('bash', [switchScript, 'navigation'], {
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      
+      let stdout = '';
+      let stderr = '';
+      
+      switchChild.stdout?.on('data', (data: Buffer) => {
+        stdout += data.toString();
+      });
+      
+      switchChild.stderr?.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+      
+      switchChild.on('exit', (code: number | null) => {
+        if (code === 0) {
+          console.log('Successfully switched to navigation mode');
+        } else {
+          console.error('Failed to switch to navigation mode:', stderr);
+        }
+      });
+      
+      // 等待模式切换完成
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+
     if (!task.navigationSequence || task.navigationSequence.length === 0) {
       const navigationSequence = await generateNavigationSequence(task);
       await task.update({ navigationSequence });
+    }
+
+    // 切换速度命令路由到导航模式
+    console.log('[Start Navigation] Switching cmd_vel_mux to navigation mode...');
+    try {
+      await rosbridgeService.callServiceAsync('/cmd_vel_mux/switch', 'std_srvs/SetBool', { data: false });
+      console.log('[Start Navigation] Successfully switched cmd_vel_mux to navigation mode');
+    } catch (muxError) {
+      console.error('[Start Navigation] Failed to switch cmd_vel_mux:', muxError);
+      // 继续执行导航任务，不因为速度路由切换失败而中断
     }
 
     const startData = {
@@ -38,6 +91,7 @@ export const startNavigation = async (req: AuthRequest, res: Response): Promise<
       success: true,
       message: 'Navigation started',
       taskId: task.id,
+      modeSwitched: currentMode !== 'navigation'
     });
   } catch (error) {
     console.error('Start navigation error:', error);
@@ -230,6 +284,17 @@ export const gotoPoint = async (req: AuthRequest, res: Response): Promise<void> 
     console.log('[Goto Point] Publishing navigation task:', testTask);
 
     try {
+      // 切换速度命令路由到导航模式
+      console.log('[Goto Point] Switching cmd_vel_mux to navigation mode...');
+      try {
+        await rosbridgeService.callServiceAsync('/cmd_vel_mux/switch', 'std_srvs/SetBool', { data: false });
+        console.log('[Goto Point] Successfully switched cmd_vel_mux to navigation mode');
+      } catch (muxError) {
+        console.error('[Goto Point] Failed to switch cmd_vel_mux:', muxError);
+        // 继续执行导航任务，不因为速度路由切换失败而中断
+      }
+
+      // 发布导航任务
       rosbridgeService.publish('/navigation_task/start', 'std_msgs/String', {
         data: JSON.stringify(testTask),
       });

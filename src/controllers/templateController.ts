@@ -585,28 +585,7 @@ export const setInitialPose = async (req: AuthRequest, res: Response): Promise<v
       ...initialPose
     });
 
-    // 同时调用AMCL的set_initial_pose服务
-    rosbridgeService.callService('/amcl/set_initial_pose', 'nav2_msgs/srv/SetInitialPose', {
-      pose: {
-        header: {
-          stamp: { sec: 0, nanosec: 0 },
-          frame_id: 'map'
-        },
-        pose: {
-          position: {
-            x: x,
-            y: y,
-            z: 0.0
-          },
-          orientation: {
-            x: 0.0,
-            y: 0.0,
-            z: z,
-            w: w
-          }
-        }
-      }
-    });
+
 
     console.log(`Initial pose set: x=${x}, y=${y}, theta=${theta} (${theta * 180 / Math.PI}°)`);
     

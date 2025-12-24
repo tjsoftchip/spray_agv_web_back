@@ -198,6 +198,48 @@ class RosbridgeService {
     this.sendToRos(rosMessage);
   }
 
+  // 异步服务调用方法，用于需要等待响应的服务调用
+  public async callServiceAsync(service: string, serviceType: string, args: any): Promise<any> {
+    return new Promise((resolve, reject) => {
+      if (!this.isConnected()) {
+        reject(new Error('Rosbridge not connected'));
+        return;
+      }
+
+      const id = `service_call_${Date.now()}_${Math.random()}`;
+      
+      // 监听服务响应
+      const messageHandler = (message: any) => {
+        if (message.op === 'service_response' && message.id === id) {
+          this.rosbridge?.removeListener('message', messageHandler);
+          if (message.values && message.values.result !== undefined) {
+            resolve(message.values);
+          } else {
+            reject(new Error('Service call failed'));
+          }
+        }
+      };
+
+      this.rosbridge?.on('message', messageHandler);
+
+      // 设置超时
+      setTimeout(() => {
+        this.rosbridge?.removeListener('message', messageHandler);
+        reject(new Error('Service call timeout'));
+      }, 5000);
+
+      // 发送服务调用请求
+      const rosMessage = {
+        op: 'call_service',
+        id,
+        service,
+        type: serviceType,
+        args,
+      };
+      this.sendToRos(rosMessage);
+    });
+  }
+
   public isConnected(): boolean {
     return this.rosbridge !== null && this.rosbridge.readyState === WebSocket.OPEN;
   }
@@ -226,22 +268,36 @@ class RosbridgeService {
       };
     }
 
-    // 2. 回退到 /odom（里程计）
-    console.log('[getRobotPose] /amcl_pose unavailable, falling back to /odom...');
+    // 2. 尝试 /odometry/filtered（滤波后的里程计）
+    console.log('[getRobotPose] /amcl_pose unavailable, trying /odometry/filtered...');
+    const filteredOdomPose = await this.tryGetPoseFromTopic('/odometry/filtered', 'nav_msgs/Odometry', 1000);
+    if (filteredOdomPose) {
+      console.log('[getRobotPose] Got pose from /odometry/filtered (filtered odometry)');
+      return {
+        ...filteredOdomPose,
+        source: 'filtered_odom',
+        frame: 'odom',
+        reliable: false,
+        warning: 'Using filtered odometry - position may drift. Please set initial pose for global localization.'
+      };
+    }
+
+    // 3. 回退到 /odom（原始里程计）
+    console.log('[getRobotPose] /odometry/filtered unavailable, falling back to /odom...');
     const odomPose = await this.tryGetPoseFromTopic('/odom', 'nav_msgs/Odometry', 1000);
     if (odomPose) {
-      console.log('[getRobotPose] Got pose from /odom (odometry)');
+      console.log('[getRobotPose] Got pose from /odom (raw odometry)');
       return {
         ...odomPose,
         source: 'odom',
         frame: 'odom',
         reliable: false,
-        warning: 'Using odometry - position may drift. Please set initial pose for global localization.'
+        warning: 'Using raw odometry - position may drift. Please set initial pose for global localization.'
       };
     }
 
-    // 3. 都失败，返回 null
-    console.warn('[getRobotPose] Failed to get pose from both /amcl_pose and /odom');
+    // 4. 都失败，返回 null
+    console.warn('[getRobotPose] Failed to get pose from /amcl_pose, /odometry/filtered, and /odom');
     return null;
   }
 

@@ -23,6 +23,7 @@ import systemRoutes from './routes/system';
 import userRoutes from './routes/users';
 import navigationRoutes from './routes/navigation';
 import obstacleRoutes from './routes/obstacles';
+import settingsRoutes from './routes/settings';
 
 dotenv.config();
 
@@ -75,6 +76,7 @@ app.use('/api/system', systemRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/navigation', navigationRoutes);
 app.use('/api/obstacles', obstacleRoutes);
+app.use('/api/settings', settingsRoutes);
 
 app.get('/api/health', async (req, res) => {
   const health = {
@@ -100,6 +102,10 @@ const startServer = async (): Promise<void> => {
   try {
     await initDatabase();
     console.log('Database initialized successfully');
+
+    // 初始化默认系统配置
+    const { initializeDefaultConfigs } = require('./controllers/settingsController');
+    await initializeDefaultConfigs();
 
     rosbridgeService.initialize(io);
     console.log('Rosbridge service initialized');

@@ -16,10 +16,10 @@ class WebCmdVelMux(Node):
             10  # 高QoS以获得更高优先级
         )
         
-        # 发布到cmd_vel
+        # 发布到manual/cmd_vel，让cmd_vel_mux_node统一处理
         self.cmd_vel_publisher = self.create_publisher(
             Twist,
-            '/cmd_vel',
+            '/manual/cmd_vel',
             10
         )
         
@@ -40,13 +40,19 @@ class WebCmdVelMux(Node):
         self.get_logger().info(f'Relayed web cmd_vel: linear.x={msg.linear.x:.2f}, angular.z={msg.angular.z:.2f}')
 
     def timer_callback(self):
-        """定时器回调，持续发送非零的web命令以覆盖其他节点的零命令"""
+        """定时器回调，只在有活跃的摇杆控制时持续发送命令"""
         current_time = self.get_clock().now().nanoseconds
         
-        # 如果1秒内有web命令且命令非零，则持续发送
-        if (current_time - self.last_web_cmd_time < 1e9 and 
+        # 如果500ms内有web命令且命令非零，则持续发送
+        # 缩短时间窗口确保摇杆松开后能快速停止
+        if (current_time - self.last_web_cmd_time < 5e8 and 
             (abs(self.last_web_cmd.linear.x) > 0.01 or abs(self.last_web_cmd.angular.z) > 0.01)):
             self.cmd_vel_publisher.publish(self.last_web_cmd)
+        elif current_time - self.last_web_cmd_time >= 5e8:
+            # 超过时间窗口，发送停止命令确保机器人停止
+            stop_cmd = Twist()
+            self.cmd_vel_publisher.publish(stop_cmd)
+            self.get_logger().debug('Timeout reached, sending stop command')
 
 def main(args=None):
     rclpy.init(args=args)

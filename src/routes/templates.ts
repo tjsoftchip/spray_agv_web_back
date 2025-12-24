@@ -57,7 +57,7 @@ router.get('/robot/current-position', authenticate, getCurrentRobotPosition);
 
 // 初始位置设置
 router.post('/initial-pose', authenticate, authorize('admin', 'operator'), setInitialPose);
-router.get('/initial-pose/status', authenticate, getInitialPoseStatus);
+router.get('/initial-pose/status', getInitialPoseStatus);
 
 // 路径预览和验证
 router.post('/:id/generate-path-preview', authenticate, generatePathPreview);

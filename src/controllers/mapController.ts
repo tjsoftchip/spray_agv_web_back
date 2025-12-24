@@ -194,13 +194,25 @@ export const getMappingStatus = async (req: Request, res: Response) => {
   try {
     const fs = require('fs');
     
-    if (fs.existsSync('/tmp/mapping_state.json')) {
-      const state = JSON.parse(fs.readFileSync('/tmp/mapping_state.json', 'utf8'));
-      res.json(state);
+    // 统一使用系统模式文件判断状态
+    if (fs.existsSync('/tmp/robot_system_mode')) {
+      const currentMode = fs.readFileSync('/tmp/robot_system_mode', 'utf8').trim();
+      const isMapping = currentMode === 'mapping';
+      
+      res.json({ 
+        isMapping: isMapping,
+        mode: currentMode,
+        timestamp: new Date().toISOString()
+      });
     } else {
-      res.json({ isMapping: false });
+      res.json({ 
+        isMapping: false,
+        mode: 'unknown',
+        timestamp: new Date().toISOString()
+      });
     }
   } catch (error) {
+    console.error('Error getting mapping status:', error);
     res.status(500).json({ error: 'Failed to get mapping status' });
   }
 };
@@ -344,34 +356,29 @@ export const getMappingStatusLocal = async (req: Request, res: Response) => {
     const { exec } = require('child_process');
     const fs = require('fs');
     
-    // 检查建图进程是否实际在运行
-    exec('pgrep -f "map_cartographer_launch.py"', { shell: true }, (error: any, stdout: string) => {
-      let isProcessRunning = !error && stdout.trim().length > 0;
+    // 统一使用系统模式文件判断状态
+    let currentMode = 'unknown';
+    let isMapping = false;
+    
+    if (fs.existsSync('/tmp/robot_system_mode')) {
+      currentMode = fs.readFileSync('/tmp/robot_system_mode', 'utf8').trim();
+      isMapping = currentMode === 'mapping';
+    }
+    
+    // 可选：验证建图进程是否实际在运行（仅用于日志）
+    exec('pgrep -f "cartographer_node"', { shell: true }, (error: any, stdout: any) => {
+      const isProcessRunning = !error && stdout.trim().length > 0;
       
-      // 读取状态文件
-      if (fs.existsSync('/tmp/mapping_state.json')) {
-        try {
-          const state = JSON.parse(fs.readFileSync('/tmp/mapping_state.json', 'utf8'));
-          
-          // 如果进程不在运行但状态文件显示在建图，更新状态
-          if (state.isMapping && !isProcessRunning) {
-            console.log('Mapping process stopped but state file still shows mapping, updating...');
-            state.isMapping = false;
-            fs.writeFileSync('/tmp/mapping_state.json', JSON.stringify(state));
-          }
-          
-          res.json(state);
-        } catch (parseError) {
-          console.error('Error parsing mapping state:', parseError);
-          res.json({ isMapping: false });
-        }
-      } else {
-        // 如果没有状态文件，始终返回 false
-        // 不要因为检测到进程就自动设置为建图状态
-        // 因为导航等其他功能也可能启动 cartographer
-        console.log('No mapping state file found, returning isMapping=false');
-        res.json({ isMapping: false });
+      if (isMapping && !isProcessRunning) {
+        console.log('Mode is mapping but cartographer process not found, may be starting/stopping');
       }
+      
+      res.json({ 
+        isMapping: isMapping,
+        mode: currentMode,
+        processRunning: isProcessRunning,
+        timestamp: new Date().toISOString()
+      });
     });
   } catch (error) {
     console.error('Error getting mapping status:', error);
@@ -389,16 +396,15 @@ export const forceStopMapping = async (req: Request, res: Response) => {
 
 export const startMappingLocal = async (req: Request, res: Response) => {
   try {
-    const { spawn, exec } = require('child_process');
+    const { spawn } = require('child_process');
     const fs = require('fs');
     
-    // 使用新的模式切换系统
     console.log('Switching to mapping mode using system manager...');
     
-    const projectDir = process.cwd();
+    const projectDir = process.env.PROJECT_DIR || '/home/jetson/yahboomcar_ros2_ws';
     const switchScript = `${projectDir}/switch_mode.sh`;
     
-    // 切换到建图模式
+    // 只使用模式切换系统，由switch_mode.sh统一管理所有节点启动
     const switchChild = spawn('bash', [switchScript, 'mapping'], {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe']
@@ -424,89 +430,14 @@ export const startMappingLocal = async (req: Request, res: Response) => {
     });
     
     // 等待模式切换完成
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    await new Promise(resolve => setTimeout(resolve, 8000));
     
     // 确保日志文件存在
     fs.writeFileSync('/tmp/mapping.log', `Mapping started at ${new Date().toISOString()}\n`);
     
-    // 保存建图状态
-    fs.writeFileSync('/tmp/mapping_state.json', JSON.stringify({
-      isMapping: true,
-      startTime: new Date().toISOString(),
-      stage: 'starting'
-    }));
-    
-    const workspacePath = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws';
-    const setupCommand = `source ${workspacePath}/install/setup.bash && `;
-    
-    // 1. 启动建图节点（会自动启动底盘、雷达等依赖节点）
-    console.log('Stage 1: Starting Cartographer mapping...');
-    const cartographerChild = spawn('bash', ['-c', 
-      setupCommand + 'ros2 launch yahboomcar_nav map_cartographer_launch.py'
-    ], {
-      stdio: ['ignore', fs.openSync('/tmp/mapping.log', 'a'), fs.openSync('/tmp/mapping.log', 'a')],
-      detached: true,
-      env: { ...process.env, ROS_DOMAIN_ID: '77' }
-    });
-    
-    // 等待建图节点启动完成
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // 检查建图节点是否启动成功
-    exec('pgrep -f "map_cartographer_launch.py"', { shell: true }, (error: any) => {
-      if (error) {
-        console.error('Cartographer failed to start');
-        fs.writeFileSync('/tmp/mapping_state.json', JSON.stringify({
-          isMapping: false,
-          error: 'Cartographer failed'
-        }));
-        return;
-      }
-      console.log('Cartographer started successfully');
-    });
-    
-    // 2. 启动机器人位置节点
-    console.log('Stage 2: Starting robot pose publisher...');
-    spawn('bash', ['-c', 
-      setupCommand + 'ros2 launch robot_pose_publisher_ros2 robot_pose_publisher_launch.py'
-    ], {
-      stdio: ['ignore', fs.openSync('/tmp/mapping.log', 'a'), fs.openSync('/tmp/mapping.log', 'a')],
-      detached: true
-    });
-    
-    // 等待robot_pose_publisher启动
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    // 3. 启动激光数据转点云节点
-    console.log('Stage 3: Starting laser scan to point cloud...');
-    spawn('bash', ['-c', 
-      setupCommand + 'ros2 run laserscan_to_point_pulisher laserscan_to_point_pulisher'
-    ], {
-      stdio: ['ignore', fs.openSync('/tmp/mapping.log', 'a'), fs.openSync('/tmp/mapping.log', 'a')],
-      detached: true
-    });
-    
-    // 等待点云转换器启动
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // 4. 启动保存地图服务节点
-    console.log('Stage 4: Starting map save service...');
-    spawn('bash', ['-c', 
-      setupCommand + 'ros2 launch yahboom_app_save_map yahboom_app_save_map.launch.py'
-    ], {
-      stdio: ['ignore', fs.openSync('/tmp/mapping.log', 'a'), fs.openSync('/tmp/mapping.log', 'a')],
-      detached: true
-    });
-    
-    // 等待服务启动
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // 更新状态为正常运行
-    fs.writeFileSync('/tmp/mapping_state.json', JSON.stringify({
-      isMapping: true,
-      startTime: new Date().toISOString(),
-      stage: 'running'
-    }));
+    // 只更新系统模式文件，不使用单独的mapping_state.json
+    // 状态统一由系统模式文件管理
+    fs.writeFileSync('/tmp/robot_system_mode', 'mapping');
     
     // 订阅所有必要的话题
     try {
@@ -521,79 +452,30 @@ export const startMappingLocal = async (req: Request, res: Response) => {
       console.error('Error subscribing to topics:', e);
     }
     
-    // 定期检查建图进程状态
-    const checkInterval = setInterval(() => {
-      exec('pgrep -f "map_cartographer_launch.py"', { shell: true }, (error: any, stdout: string) => {
-        if (error || !stdout.trim()) {
-          console.log('Cartographer process stopped, stopping mapping');
-          fs.writeFileSync('/tmp/mapping_state.json', JSON.stringify({
-            isMapping: false,
-            stage: 'stopped'
-          }));
-          clearInterval(checkInterval);
-        }
-      });
-    }, 5000);
+    console.log('Mapping mode initialized successfully via system manager');
     
-    // 最后检查所有节点是否都已启动
-    console.log('Verifying all nodes are running...');
-    const checkNodes = async () => {
-      const nodes = [
-        { name: 'cartographer', pattern: 'map_cartographer_launch.py' },
-        { name: 'robot_pose_publisher', pattern: 'robot_pose_publisher' },
-        { name: 'laserscan_to_point', pattern: 'laserscan_to_point' },
-        { name: 'yahboom_app_save_map', pattern: 'yahboom_app_save_map' }
-      ];
-      
-      for (const node of nodes) {
-        await new Promise<void>((resolve) => {
-          exec(`pgrep -f "${node.pattern}"`, { shell: true }, (error: any) => {
-            if (error) {
-              console.warn(`Warning: ${node.name} may not be running`);
-            } else {
-              console.log(`${node.name} is running`);
-            }
-            resolve();
-          });
-        });
-      }
-    };
-    
-    await checkNodes();
-    
-    console.log('All mapping services started successfully');
     res.json({ 
-      message: 'Local mapping started successfully',
-      stages: [
-        'cartographer mapping (with auto-started dependencies)',
-        'robot pose publisher',
-        'laser scan to point cloud',
-        'map save service'
-      ]
+      message: '建图模式启动成功',
+      mode: 'mapping',
+      timestamp: new Date().toISOString()
     });
-  } catch (error) {
+    
+  } catch (error: any) {
     console.error('Error starting local mapping:', error);
-    // 如果启动失败，重置状态
-    const fs = require('fs');
-    fs.writeFileSync('/tmp/mapping_state.json', JSON.stringify({
-      isMapping: false,
-      error: error instanceof Error ? error.message : 'Unknown error'
-    }));
-    res.status(500).json({ error: 'Failed to start local mapping' });
+    res.status(500).json({ error: 'Failed to start mapping' });
   }
 };
 
 export const stopMappingLocal = async (req: Request, res: Response) => {
   try {
-    const { spawn, exec } = require('child_process');
-    const fs = require('fs');
+    const { spawn } = require('child_process');
     
     console.log('Stopping local mapping...');
     
-    // 使用新的模式切换系统切换到待机模式
+    // 只使用模式切换系统，由switch_mode.sh统一管理所有节点停止
     console.log('Switching to idle mode using system manager...');
     
-    const projectDir = process.cwd();
+    const projectDir = process.env.PROJECT_DIR || '/home/jetson/yahboomcar_ros2_ws';
     const switchScript = `${projectDir}/switch_mode.sh`;
     
     // 切换到待机模式
@@ -622,14 +504,12 @@ export const stopMappingLocal = async (req: Request, res: Response) => {
     });
     
     // 等待模式切换完成
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 5000));
     
-    // 更新状态
-    fs.writeFileSync('/tmp/mapping_state.json', JSON.stringify({
-      isMapping: false,
-      stage: 'stopped',
-      stopTime: new Date().toISOString()
-    }));
+    // 只更新系统模式文件，不使用单独的mapping_state.json
+    // 状态统一由系统模式文件管理
+    const fs = require('fs');
+    fs.writeFileSync('/tmp/robot_system_mode', 'idle');
     
     // 取消话题订阅
     try {
@@ -644,28 +524,17 @@ export const stopMappingLocal = async (req: Request, res: Response) => {
       console.error('Error unsubscribing topics:', e);
     }
     
-    console.log('All mapping processes stopped');
+    console.log('Mapping mode stopped successfully via system manager');
+    
     res.json({ 
-      message: 'Local mapping stopped successfully',
-      stoppedProcesses: [
-        'yahboom_app_save_map',
-        'laserscan_to_point',
-        'robot_pose_publisher',
-        'map_cartographer_launch.py',
-        'yahboomcar_bringup_R2_launch.py',
-        'Ackman_driver_R2',
-        'ydlidar_ros2_driver',
-        'cartographer_node',
-        'cartographer_occupancy_grid_node',
-        'joint_state_publisher',
-        'joy_ctrl',
-        'joy_node',
-        'static_transform_publisher'
-      ]
+      message: '建图模式已停止',
+      mode: 'idle',
+      timestamp: new Date().toISOString()
     });
-  } catch (error) {
+    
+  } catch (error: any) {
     console.error('Error stopping local mapping:', error);
-    res.status(500).json({ error: 'Failed to stop local mapping' });
+    res.status(500).json({ error: 'Failed to stop mapping' });
   }
 };
 

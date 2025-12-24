@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { exec, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { SystemConfig } from '../models';
 
 // 系统状态接口
 interface SystemStatus {
@@ -26,6 +27,7 @@ interface SystemStatus {
   };
   lastModeChange: string;
   uptime: string;
+  hostname: string;
 }
 
 // PID管理
@@ -73,14 +75,37 @@ function getCurrentMode(): string {
 function getUptime(): string {
   try {
     if (fs.existsSync(START_TIME_FILE)) {
-      const startTime = new Date(fs.readFileSync(START_TIME_FILE, 'utf8').trim());
+      const startTimeStr = fs.readFileSync(START_TIME_FILE, 'utf8').trim();
+      const startTime = new Date(startTimeStr);
       const now = new Date();
+      
+      // 检查时间是否有效
+      if (isNaN(startTime.getTime())) {
+        console.error('Invalid start time format:', startTimeStr);
+        return '未知';
+      }
+      
       const uptime = now.getTime() - startTime.getTime();
       
-      const hours = Math.floor(uptime / (1000 * 60 * 60));
+      // 如果 uptime 为负数，说明时间有问题
+      if (uptime < 0) {
+        console.error('Negative uptime detected, updating start time');
+        // 更新启动时间为当前时间
+        fs.writeFileSync(START_TIME_FILE, now.toISOString());
+        return '0小时0分钟';
+      }
+      
+      const days = Math.floor(uptime / (1000 * 60 * 60 * 24));
+      const hours = Math.floor((uptime % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
       const minutes = Math.floor((uptime % (1000 * 60 * 60)) / (1000 * 60));
       
-      return `${hours}小时${minutes}分钟`;
+      if (days > 0) {
+        return `${days}天${hours}小时${minutes}分钟`;
+      } else if (hours > 0) {
+        return `${hours}小时${minutes}分钟`;
+      } else {
+        return `${minutes}分钟`;
+      }
     }
   } catch (e) {
     console.error('Error calculating uptime:', e);
@@ -91,8 +116,32 @@ function getUptime(): string {
 // 获取系统状态
 export const getSystemStatus = async (req: Request, res: Response) => {
   try {
+    // 获取系统配置
+    let hostname = 'KWS-R2'; // 默认主机名
+    
+    try {
+      const hostnameConfig = await SystemConfig.findOne({ where: { key: 'hostname' } });
+      if (hostnameConfig) {
+        hostname = hostnameConfig.value;
+      } else {
+        // 如果没有配置，创建默认配置
+        await SystemConfig.create({
+          key: 'hostname',
+          value: hostname,
+          description: '系统主机名',
+          category: 'system'
+        });
+      }
+    } catch (e) {
+      console.error('Error getting hostname from database:', e);
+    }
+
+    // 强制读取模式文件
+    const currentMode = getCurrentMode();
+    console.log('Current mode from file:', currentMode);
+
     const status: SystemStatus = {
-      mode: getCurrentMode() as any,
+      mode: currentMode as any,
       basicServices: {
         chassis: false,
         cmdVelMux: false,
@@ -112,11 +161,16 @@ export const getSystemStatus = async (req: Request, res: Response) => {
         }
       },
       lastModeChange: '',
-      uptime: getUptime()
+      uptime: getUptime(),
+      hostname: hostname
     };
 
     // 检查基础服务
-    const chassisPid = readPidFile('chassis.pid');
+    let chassisPid = readPidFile('chassis_driver.pid');
+    if (!chassisPid) {
+      // 兼容旧系统
+      chassisPid = readPidFile('chassis.pid');
+    }
     if (chassisPid) status.basicServices.chassis = isProcessRunning(chassisPid);
 
     const muxPid = readPidFile('cmd_vel_mux.pid');
@@ -128,15 +182,57 @@ export const getSystemStatus = async (req: Request, res: Response) => {
     const monitorPid = readPidFile('system_monitor.pid');
     if (monitorPid) status.basicServices.systemMonitor = isProcessRunning(monitorPid);
 
+    // 检查Web前端服务
+    try {
+      const { spawn } = require('child_process');
+      const frontendCheck = spawn('curl', ['-s', '--connect-timeout', '2', 'http://localhost:5173'], {
+        stdio: 'pipe'
+      });
+      
+      frontendCheck.on('close', (code: number | null) => {
+        if (code === 0) {
+          status.basicServices.webFrontend = true;
+        }
+      });
+      
+      // 同步检查
+      const { execSync } = require('child_process');
+      try {
+        execSync('curl -s --connect-timeout 2 http://localhost:5173 > /dev/null', { timeout: 3000 });
+        status.basicServices.webFrontend = true;
+      } catch (e) {
+        status.basicServices.webFrontend = false;
+      }
+    } catch (e) {
+      status.basicServices.webFrontend = false;
+    }
+
     // 检查功能节点
-    status.functionalNodes.mapping = processExists('cartographer_node');
-    status.functionalNodes.navigation = processExists('nav2');
-    status.functionalNodes.supply = processExists('supply_manager');
+    status.functionalNodes.mapping = await processExists('cartographer_node');
+    status.functionalNodes.navigation = await processExists('nav2');
+    status.functionalNodes.supply = await processExists('supply_manager');
     
-    // 检查传感器
-    status.functionalNodes.sensors.camera = processExists('astra_camera_node');
-    status.functionalNodes.sensors.lidar = processExists('ydlidar_ros2_driver');
-    status.functionalNodes.sensors.webVideo = processExists('web_video_server');
+    // 检查传感器 - 使用更精确的检测
+    const cameraCount = await new Promise<number>((resolve) => {
+      exec('pgrep -f "astra_camera_node" | wc -l', (error, stdout) => {
+        resolve(parseInt(stdout.trim()));
+      });
+    });
+    const lidarCount = await new Promise<number>((resolve) => {
+      exec('pgrep -f "ydlidar_ros2_driver" | wc -l', (error, stdout) => {
+        resolve(parseInt(stdout.trim()));
+      });
+    });
+    const webVideoCount = await new Promise<number>((resolve) => {
+      exec('pgrep -f "web_video_server" | wc -l', (error, stdout) => {
+        resolve(parseInt(stdout.trim()));
+      });
+    });
+    
+    // 设置传感器状态
+    status.functionalNodes.sensors.camera = cameraCount > 0;
+    status.functionalNodes.sensors.lidar = lidarCount > 0;
+    status.functionalNodes.sensors.webVideo = webVideoCount > 0;
 
     res.json(status);
   } catch (error) {
@@ -148,8 +244,45 @@ export const getSystemStatus = async (req: Request, res: Response) => {
 // 检查进程是否存在
 function processExists(processName: string): boolean {
   return new Promise((resolve) => {
-    exec(`pgrep -f "${processName}"`, (error, stdout) => {
-      resolve(!error && stdout.trim().length > 0);
+    // 使用更精确的进程检测
+    let command = '';
+    switch (processName) {
+      case 'cartographer_node':
+        command = 'pgrep -f "cartographer_node" | wc -l';
+        break;
+      case 'nav2':
+        command = 'pgrep -f "nav2" | wc -l';
+        break;
+      case 'supply_manager':
+        command = 'pgrep -f "supply_manager" | wc -l';
+        break;
+      case 'astra_camera_node':
+        command = 'pgrep -f "astra_camera_node" | wc -l';
+        break;
+      case 'ydlidar_ros2_driver':
+        command = 'pgrep -f "ydlidar_ros2_driver" | wc -l';
+        break;
+      case 'web_video_server':
+        command = 'pgrep -f "web_video_server" | wc -l';
+        break;
+      default:
+        command = `pgrep -f "${processName}" | wc -l`;
+    }
+    
+    exec(command, (error, stdout) => {
+      if (!error) {
+        const count = parseInt(stdout.trim());
+        if (count > 0) {
+          // 验证进程是否真的在运行
+          exec(`pgrep -f "${processName}" | head -1 | xargs ps -p -o comm=`, (pidError, pidStdout) => {
+            resolve(!pidError && pidStdout.trim().length > 0);
+          });
+        } else {
+          resolve(false);
+        }
+      } else {
+        resolve(false);
+      }
     });
   }) as any;
 }
@@ -163,7 +296,7 @@ export const switchMode = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Invalid mode' });
     }
 
-    const projectDir = process.cwd();
+    const projectDir = process.env.PROJECT_DIR || '/home/jetson/yahboomcar_ros2_ws';
     const switchScript = path.join(projectDir, 'switch_mode.sh');
 
     // 执行模式切换
@@ -191,14 +324,25 @@ export const switchMode = async (req: Request, res: Response) => {
       }
     });
 
-    // 等待一段时间让脚本执行
-    setTimeout(() => {
-      res.json({ 
-        message: `Switching to ${mode} mode`,
-        mode: mode,
-        stdout: stdout,
-        stderr: stderr
-      });
+    // 等待一段时间让脚本执行，然后根据模式切换速度命令路由
+    setTimeout(async () => {
+      try {
+        // 如果是导航模式，enhanced_cmd_vel_mux_node会自动处理速度源切换
+        if (mode === 'navigation') {
+          console.log('[System Mode Switch] Navigation mode activated - enhanced_cmd_vel_mux_node will handle speed source priority');
+          stdout += '\n[INFO] Navigation mode activated - speed priority managed by enhanced_cmd_vel_mux_node';
+        }
+        
+        res.json({ 
+          message: `Switching to ${mode} mode`,
+          mode: mode,
+          stdout: stdout,
+          stderr: stderr
+        });
+      } catch (error) {
+        console.error('Error in post-switch processing:', error);
+        res.status(500).json({ error: 'Failed to complete mode switch' });
+      }
     }, 3000);
 
   } catch (error) {
@@ -319,5 +463,72 @@ export const getTopicList = async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error getting topic list:', error);
     res.status(500).json({ error: 'Failed to get topic list' });
+  }
+};
+
+// 获取系统配置
+export const getSystemConfig = async (req: Request, res: Response) => {
+  try {
+    // 默认系统配置
+    const defaultConfig = {
+      system: {
+        name: '梁场养护机器人',
+        version: '1.0.0',
+        autoStart: true,
+        logLevel: 'info'
+      },
+      navigation: {
+        defaultSpeed: 0.5,
+        maxSpeed: 1.0,
+        obstacleAvoidance: true,
+        planningTimeout: 30
+      },
+      mapping: {
+        resolution: 0.05,
+        updateRate: 5,
+        scanRange: 10.0
+      },
+      supply: {
+        markerSize: 0.168,
+        alignmentTolerance: 0.05,
+        maxRetryAttempts: 3
+      },
+      camera: {
+        width: 640,
+        height: 480,
+        fps: 30,
+        enableDepth: true
+      },
+      network: {
+        rosbridgePort: 9090,
+        webVideoPort: 8080,
+        apiPort: 3000,
+        frontendPort: 5173
+      }
+    };
+    
+    res.json(defaultConfig);
+  } catch (error) {
+    console.error('Error getting system config:', error);
+    res.status(500).json({ error: 'Failed to get system config' });
+  }
+};
+
+// 更新系统配置
+export const updateSystemConfig = async (req: Request, res: Response) => {
+  try {
+    const config = req.body;
+    
+    // 这里可以将配置保存到文件或数据库
+    // 目前只是返回成功响应
+    console.log('System config updated:', config);
+    
+    res.json({ 
+      message: 'System configuration updated successfully',
+      config: config
+    });
+  } catch (error) {
+    console.error('Error updating system config:', error);
+    res.status(500).json({ error: 'Failed to update system config' });
   }
 };

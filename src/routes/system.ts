@@ -24,4 +24,10 @@ router.get('/nodes', systemController.getNodeList);
 // 获取话题列表
 router.get('/topics', systemController.getTopicList);
 
+// 获取系统配置
+router.get('/config', systemController.getSystemConfig);
+
+// 更新系统配置
+router.put('/config', systemController.updateSystemConfig);
+
 export default router;

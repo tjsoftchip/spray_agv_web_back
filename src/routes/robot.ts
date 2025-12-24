@@ -12,5 +12,6 @@ router.post('/motion/stop', robotController.stopMotion);
 router.post('/control-spray', robotController.controlSpray);
 router.post('/start-navigation', robotController.startNavigation);
 router.post('/stop-navigation', robotController.stopNavigation);
+router.post('/emergency-stop', robotController.emergencyStop);
 
 export default router;

@@ -9,6 +9,7 @@ import RoadSegment from './RoadSegment';
 import TaskQueue from './TaskQueue';
 import MapModel from './Map';
 import Schedule from './Schedule';
+import SystemConfig from './SystemConfig';
 
 const models = {
   User,
@@ -21,6 +22,7 @@ const models = {
   TaskQueue,
   MapModel,
   Schedule,
+  SystemConfig,
 };
 
 // 定义模型关联
@@ -58,5 +60,5 @@ export const initDatabase = async (): Promise<void> => {
   }
 };
 
-export { sequelize, User, Template, Task, SupplyStation, BeamYard, NavigationPoint, RoadSegment, TaskQueue, MapModel, Schedule };
+export { sequelize, User, Template, Task, SupplyStation, BeamYard, NavigationPoint, RoadSegment, TaskQueue, MapModel, Schedule, SystemConfig };
 export default models;

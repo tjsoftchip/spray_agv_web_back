@@ -79,8 +79,55 @@ export const getSupplyStatus = async (req: Request, res: Response) => {
 // 启动补给流程
 export const startSupply = async (req: Request, res: Response) => {
   try {
+    // 检查当前系统模式，如果不是补给模式则切换
+    const { spawn } = require('child_process');
+    const fs = require('fs');
+    
+    const currentMode = fs.existsSync('/tmp/robot_system_mode') 
+      ? fs.readFileSync('/tmp/robot_system_mode', 'utf8').trim() 
+      : 'unknown';
+    
+    if (currentMode !== 'supply') {
+      console.log(`Switching from ${currentMode} to supply mode...`);
+      
+      const projectDir = process.cwd();
+      const switchScript = `${projectDir}/switch_mode.sh`;
+      
+      // 切换到补给模式
+      const switchChild = spawn('bash', [switchScript, 'supply'], {
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      
+      let stdout = '';
+      let stderr = '';
+      
+      switchChild.stdout?.on('data', (data: Buffer) => {
+        stdout += data.toString();
+      });
+      
+      switchChild.stderr?.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+      
+      switchChild.on('exit', (code: number | null) => {
+        if (code === 0) {
+          console.log('Successfully switched to supply mode');
+        } else {
+          console.error('Failed to switch to supply mode:', stderr);
+        }
+      });
+      
+      // 等待模式切换完成
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+    
     rosbridgeService.callService('/supply_manager/start_supply', 'std_srvs/Trigger', {});
-    res.json({ success: true, message: 'Supply start command sent' });
+    res.json({ 
+      success: true, 
+      message: 'Supply start command sent',
+      modeSwitched: currentMode !== 'supply'
+    });
   } catch (error) {
     res.status(500).json({ error: 'Failed to start supply' });
   }
@@ -221,7 +268,7 @@ export const getTaskPath = async (req: Request, res: Response) => {
 export const manualControl = async (req: Request, res: Response) => {
   try {
     const { linear_x, linear_y, angular_z } = req.body;
-    rosbridgeService.publish('/cmd_vel', 'geometry_msgs/Twist', {
+    rosbridgeService.publish('/manual/cmd_vel', 'geometry_msgs/Twist', {
       linear: { x: linear_x || 0, y: linear_y || 0, z: 0 },
       angular: { x: 0, y: 0, z: angular_z || 0 }
     });
