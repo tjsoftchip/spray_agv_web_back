@@ -24,6 +24,8 @@ import userRoutes from './routes/users';
 import navigationRoutes from './routes/navigation';
 import obstacleRoutes from './routes/obstacles';
 import settingsRoutes from './routes/settings';
+import pathGeneratorRoutes from './routes/pathGenerator';
+import pathSMIntegrationRoutes from './routes/pathSMIntegration';
 
 dotenv.config();
 
@@ -77,6 +79,8 @@ app.use('/api/users', userRoutes);
 app.use('/api/navigation', navigationRoutes);
 app.use('/api/obstacles', obstacleRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/path', pathGeneratorRoutes);
+app.use('/api/path-sm', pathSMIntegrationRoutes);
 
 app.get('/api/health', async (req, res) => {
   const health = {

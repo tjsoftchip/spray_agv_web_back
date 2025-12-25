@@ -244,6 +244,11 @@ class RosbridgeService {
     return this.rosbridge !== null && this.rosbridge.readyState === WebSocket.OPEN;
   }
 
+  // Public method to get the rosbridge instance for event listener access
+  public getRosbridge(): WebSocket | null {
+    return this.rosbridge;
+  }
+
   public publish(topic: string, messageType: string, message: any): void {
     this.publishTopic(topic, messageType, message);
   }
