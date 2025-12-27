@@ -39,8 +39,8 @@ export const generateAutoPath = async (req: AuthRequest, res: Response): Promise
             if (message.op === 'service_response' && message.id === id) {
               rosbridgeService.getRosbridge()?.removeListener('message', messageHandler);
               
-              if (message.values && message.values.result) {
-                const resultData = JSON.parse(message.values.result);
+              if (message.values && message.values.success !== undefined) {
+                const resultData = JSON.parse(message.values.message);
                 resolve(resultData);
               } else {
                 reject(new Error('Service call failed'));
@@ -59,11 +59,20 @@ export const generateAutoPath = async (req: AuthRequest, res: Response): Promise
           reject(new Error('Service call timeout'));
         }, 30000);
 
-        rosbridgeService.callService(
-          '/path_generator/generate',
-          'std_srvs/Trigger',
-          { request: JSON.stringify(pathGenerationRequest) }
+        rosbridgeService.publishTopic(
+          '/path_generator/request',
+          'std_msgs/String',
+          { data: JSON.stringify(pathGenerationRequest) }
         );
+
+        setTimeout(() => {
+          rosbridgeService.callService(
+            '/path_generator/generate',
+            'std_srvs/Trigger',
+            {},
+            id
+          );
+        }, 1000);
       });
 
       console.log('[Path Generator] ROS response received:', result);
@@ -140,8 +149,8 @@ export const savePath = async (req: AuthRequest, res: Response): Promise<void> =
             if (message.op === 'service_response' && message.id === id) {
               rosbridgeService.getRosbridge()?.removeListener('message', messageHandler);
               
-              if (message.values && message.values.result) {
-                const resultData = JSON.parse(message.values.result);
+              if (message.values && message.values.success !== undefined) {
+                const resultData = JSON.parse(message.values.message);
                 resolve(resultData);
               } else {
                 reject(new Error('Service call failed'));
@@ -160,11 +169,20 @@ export const savePath = async (req: AuthRequest, res: Response): Promise<void> =
           reject(new Error('Service call timeout'));
         }, 10000);
 
-        rosbridgeService.callService(
-          '/path_generator/save',
-          'std_srvs/Trigger',
-          { request: JSON.stringify(savedPath) }
+        rosbridgeService.publishTopic(
+          '/path_generator/request',
+          'std_msgs/String',
+          { data: JSON.stringify(savedPath) }
         );
+
+        setTimeout(() => {
+          rosbridgeService.callService(
+            '/path_generator/save',
+            'std_srvs/Trigger',
+            {},
+            id
+          );
+        }, 500);
       });
 
       res.json({
@@ -201,8 +219,8 @@ export const exportPath = async (req: AuthRequest, res: Response): Promise<void>
             if (message.op === 'service_response' && message.id === id) {
               rosbridgeService.getRosbridge()?.removeListener('message', messageHandler);
               
-              if (message.values && message.values.result) {
-                const resultData = JSON.parse(message.values.result);
+              if (message.values && message.values.success !== undefined) {
+                const resultData = JSON.parse(message.values.message);
                 resolve(resultData);
               } else {
                 reject(new Error('Service call failed'));
@@ -221,11 +239,20 @@ export const exportPath = async (req: AuthRequest, res: Response): Promise<void>
           reject(new Error('Service call timeout'));
         }, 10000);
 
-        rosbridgeService.callService(
-          '/path_generator/export',
-          'std_srvs/Trigger',
-          { request: JSON.stringify({ path_id: pathId }) }
+        rosbridgeService.publishTopic(
+          '/path_generator/request',
+          'std_msgs/String',
+          { data: JSON.stringify({ path_id: pathId }) }
         );
+
+        setTimeout(() => {
+          rosbridgeService.callService(
+            '/path_generator/export',
+            'std_srvs/Trigger',
+            {},
+            id
+          );
+        }, 500);
       });
 
       res.json({
@@ -263,8 +290,8 @@ export const loadPath = async (req: AuthRequest, res: Response): Promise<void> =
             if (message.op === 'service_response' && message.id === id) {
               rosbridgeService.getRosbridge()?.removeListener('message', messageHandler);
               
-              if (message.values && message.values.result) {
-                const resultData = JSON.parse(message.values.result);
+              if (message.values && message.values.success !== undefined) {
+                const resultData = JSON.parse(message.values.message);
                 resolve(resultData);
               } else {
                 reject(new Error('Service call failed'));
@@ -283,11 +310,20 @@ export const loadPath = async (req: AuthRequest, res: Response): Promise<void> =
           reject(new Error('Service call timeout'));
         }, 10000);
 
-        rosbridgeService.callService(
-          '/path_generator/load',
-          'std_srvs/Trigger',
-          { request: JSON.stringify({ path_id: pathId }) }
+        rosbridgeService.publishTopic(
+          '/path_generator/request',
+          'std_msgs/String',
+          { data: JSON.stringify({ path_id: pathId }) }
         );
+
+        setTimeout(() => {
+          rosbridgeService.callService(
+            '/path_generator/load',
+            'std_srvs/Trigger',
+            {},
+            id
+          );
+        }, 1000);
       });
 
       res.json({
@@ -330,8 +366,8 @@ export const listPaths = async (req: AuthRequest, res: Response): Promise<void> 
             if (message.op === 'service_response' && message.id === id) {
               rosbridgeService.getRosbridge()?.removeListener('message', messageHandler);
               
-              if (message.values && message.values.result) {
-                const resultData = JSON.parse(message.values.result);
+              if (message.values && message.values.success !== undefined) {
+                const resultData = JSON.parse(message.values.message);
                 resolve(resultData);
               } else {
                 reject(new Error('Service call failed'));
@@ -350,11 +386,20 @@ export const listPaths = async (req: AuthRequest, res: Response): Promise<void> 
           reject(new Error('Service call timeout'));
         }, 10000);
 
-        rosbridgeService.callService(
-          '/path_generator/list',
-          'std_srvs/Trigger',
-          { request: JSON.stringify({ map_id: mapId || '' }) }
+        rosbridgeService.publishTopic(
+          '/path_generator/request',
+          'std_msgs/String',
+          { data: JSON.stringify({ map_id: mapId || '' }) }
         );
+
+        setTimeout(() => {
+          rosbridgeService.callService(
+            '/path_generator/list',
+            'std_srvs/Trigger',
+            {},
+            id
+          );
+        }, 500);
       });
 
       res.json({
@@ -390,8 +435,8 @@ export const deletePath = async (req: AuthRequest, res: Response): Promise<void>
             if (message.op === 'service_response' && message.id === id) {
               rosbridgeService.getRosbridge()?.removeListener('message', messageHandler);
               
-              if (message.values && message.values.result) {
-                const resultData = JSON.parse(message.values.result);
+              if (message.values && message.values.success !== undefined) {
+                const resultData = JSON.parse(message.values.message);
                 resolve(resultData);
               } else {
                 reject(new Error('Service call failed'));
@@ -410,11 +455,20 @@ export const deletePath = async (req: AuthRequest, res: Response): Promise<void>
           reject(new Error('Service call timeout'));
         }, 10000);
 
-        rosbridgeService.callService(
-          '/path_generator/delete',
-          'std_srvs/Trigger',
-          { request: JSON.stringify({ path_id: pathId }) }
+        rosbridgeService.publishTopic(
+          '/path_generator/request',
+          'std_msgs/String',
+          { data: JSON.stringify({ path_id: pathId }) }
         );
+
+        setTimeout(() => {
+          rosbridgeService.callService(
+            '/path_generator/delete',
+            'std_srvs/Trigger',
+            {},
+            id
+          );
+        }, 1000);
       });
 
       res.json({
@@ -453,8 +507,8 @@ export const validatePath = async (req: AuthRequest, res: Response): Promise<voi
             if (message.op === 'service_response' && message.id === id) {
               rosbridgeService.getRosbridge()?.removeListener('message', messageHandler);
               
-              if (message.values && message.values.result) {
-                const resultData = JSON.parse(message.values.result);
+              if (message.values && message.values.success !== undefined) {
+                const resultData = JSON.parse(message.values.message);
                 resolve(resultData);
               } else {
                 reject(new Error('Service call failed'));
@@ -473,11 +527,20 @@ export const validatePath = async (req: AuthRequest, res: Response): Promise<voi
           reject(new Error('Service call timeout'));
         }, 10000);
 
-        rosbridgeService.callService(
-          '/path_generator/validate',
-          'std_srvs/Trigger',
-          { request: JSON.stringify({ points, map_id: mapId }) }
+        rosbridgeService.publishTopic(
+          '/path_generator/request',
+          'std_msgs/String',
+          { data: JSON.stringify({ points, map_id: mapId }) }
         );
+
+        setTimeout(() => {
+          rosbridgeService.callService(
+            '/path_generator/validate',
+            'std_srvs/Trigger',
+            {},
+            id
+          );
+        }, 1000);
       });
 
       res.json({

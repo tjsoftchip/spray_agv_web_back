@@ -188,13 +188,16 @@ class RosbridgeService {
     this.sendToRos(rosMessage);
   }
 
-  public callService(service: string, serviceType: string, args: any): void {
-    const rosMessage = {
+  public callService(service: string, serviceType: string, args: any, id?: string): void {
+    const rosMessage: any = {
       op: 'call_service',
       service,
       type: serviceType,
       args,
     };
+    if (id) {
+      rosMessage.id = id;
+    }
     this.sendToRos(rosMessage);
   }
 
