@@ -33,7 +33,7 @@ const app: Application = express();
 const httpServer = createServer(app);
 const io = new SocketIOServer(httpServer, {
   cors: {
-    origin: process.env.CORS_ORIGIN === '*' ? true : (process.env.CORS_ORIGIN || 'http://localhost:5173'),
+    origin: '*', // 允许来自任何地址的连接
     methods: ['GET', 'POST'],
     credentials: true,
   },
@@ -58,7 +58,7 @@ const authLimiter = rateLimit({
 app.use(compression());
 app.use(limiter);
 app.use(cors({
-  origin: process.env.CORS_ORIGIN === '*' ? true : (process.env.CORS_ORIGIN || 'http://localhost:5173'),
+  origin: '*', // 允许来自任何地址的连接
   credentials: true,
 }));
 app.use(express.json());
