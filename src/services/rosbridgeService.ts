@@ -85,9 +85,6 @@ class RosbridgeService {
               height: message.msg.info?.height,
               resolution: message.msg.info?.resolution
             });
-          } else if (topic === '/emergency_stop_status' && message.msg) {
-            // 紧急停止状态变化时才打印
-            console.log('Emergency stop status:', message.msg.data);
           }
           
           if (now - lastSent >= throttleInterval) {
@@ -162,7 +159,6 @@ class RosbridgeService {
 
   private sendToRos(data: any): void {
     if (this.rosbridge && this.rosbridge.readyState === WebSocket.OPEN) {
-      console.log('Sending to ROS:', JSON.stringify(data, null, 2));
       this.rosbridge.send(JSON.stringify(data));
     } else {
       console.error('Rosbridge not connected, cannot send:', data);
@@ -191,7 +187,6 @@ class RosbridgeService {
       topic,
       type: messageType,
     };
-    console.log(`Subscribing to topic: ${topic} (${messageType})`);
     this.sendToRos(rosMessage);
   }
 
@@ -279,10 +274,8 @@ class RosbridgeService {
     }
 
     // 1. 优先尝试 /amcl_pose（全局定位）
-    console.log('[getRobotPose] Trying /amcl_pose first...');
     const amclPose = await this.tryGetPoseFromTopic('/amcl_pose', 'geometry_msgs/PoseWithCovarianceStamped', 1500);
     if (amclPose) {
-      console.log('[getRobotPose] Got pose from /amcl_pose (global localization)');
       return {
         ...amclPose,
         source: 'amcl',
@@ -292,10 +285,8 @@ class RosbridgeService {
     }
 
     // 2. 尝试 /odometry/filtered（滤波后的里程计）
-    console.log('[getRobotPose] /amcl_pose unavailable, trying /odometry/filtered...');
     const filteredOdomPose = await this.tryGetPoseFromTopic('/odometry/filtered', 'nav_msgs/Odometry', 1000);
     if (filteredOdomPose) {
-      console.log('[getRobotPose] Got pose from /odometry/filtered (filtered odometry)');
       return {
         ...filteredOdomPose,
         source: 'filtered_odom',
@@ -306,10 +297,8 @@ class RosbridgeService {
     }
 
     // 3. 回退到 /odom（原始里程计）
-    console.log('[getRobotPose] /odometry/filtered unavailable, falling back to /odom...');
     const odomPose = await this.tryGetPoseFromTopic('/odom', 'nav_msgs/Odometry', 1000);
     if (odomPose) {
-      console.log('[getRobotPose] Got pose from /odom (raw odometry)');
       return {
         ...odomPose,
         source: 'odom',
