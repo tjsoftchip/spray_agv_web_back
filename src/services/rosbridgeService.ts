@@ -22,7 +22,8 @@ class RosbridgeService {
     '/tf_static': 1000, // 静态tf消息限制在1s
     '/navigation_task/status': 200, // 导航状态200ms
     '/obstacle_detection': 100, // 障碍物检测100ms
-    '/camera/color/image_raw/compressed': 500 // 相机图像限制在500ms (2fps)
+    '/camera/color/image_raw/compressed': 500, // 相机图像限制在500ms (2fps)
+    '/emergency_stop_status': 1000 // 紧急停止状态限制在1s
   };
 
   constructor() {
@@ -72,9 +73,8 @@ class RosbridgeService {
           
           // 使用特殊话题的频率限制
           const throttleInterval = this.specialTopicIntervals[topic] || this.throttleInterval;
-          
-          // 添加调试信息
-          console.log(`Received ${topic} message:`, message.msg ? 'has msg' : 'no msg');
+
+          // 只对特定话题打印调试信息（减少日志输出）
           if (topic === '/tf' && message.msg && message.msg.transforms) {
             console.log('TF transforms:', message.msg.transforms.length);
           } else if (topic === '/map' && message.msg) {
@@ -85,6 +85,9 @@ class RosbridgeService {
               height: message.msg.info?.height,
               resolution: message.msg.info?.resolution
             });
+          } else if (topic === '/emergency_stop_status' && message.msg) {
+            // 紧急停止状态变化时才打印
+            console.log('Emergency stop status:', message.msg.data);
           }
           
           if (now - lastSent >= throttleInterval) {
