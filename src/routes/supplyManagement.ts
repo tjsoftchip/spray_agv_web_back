@@ -35,4 +35,8 @@ router.post('/control/manual', supplyManagementController.manualControl);
 router.get('/system/metrics', supplyManagementController.getSystemMetrics);
 router.get('/system/nodes', supplyManagementController.getNodeStatus);
 
+// 水位监控
+router.get('/water/status', supplyManagementController.getWaterLevelStatus);
+router.get('/water/history', supplyManagementController.getWaterLevelHistory);
+
 export default router;

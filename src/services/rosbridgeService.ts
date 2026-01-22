@@ -59,7 +59,8 @@ class RosbridgeService {
         
         this.subscribeTopic('/navigation_task/status', 'std_msgs/String');
         this.subscribeTopic('/obstacle_detection', 'std_msgs/String');
-        console.log('Subscribed to navigation and obstacle detection topics');
+        this.subscribeTopic('/water_monitor/level', 'std_msgs/String');
+        console.log('Subscribed to navigation, obstacle detection and water level topics');
       });
 
       this.rosbridge.on('message', (data: WebSocket.Data) => {
@@ -114,6 +115,17 @@ class RosbridgeService {
                 this.broadcastToClients('obstacle_status', obstacleData);
               } catch (e) {
                 console.error('Parse obstacle detection error:', e);
+              }
+            } else if (topic === '/water_monitor/level' && message.msg) {
+              try {
+                const waterData = JSON.parse(message.msg.data);
+                // 更新全局水位状态
+                const supplyManagementController = require('../controllers/supplyManagementController');
+                supplyManagementController.updateWaterLevelStatus(waterData);
+                this.broadcastToClients('water_level_status', waterData);
+                console.log('Water level updated:', waterData);
+              } catch (e) {
+                console.error('Parse water level error:', e);
               }
             }
           }

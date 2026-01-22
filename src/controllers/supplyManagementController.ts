@@ -310,9 +310,89 @@ export const getNodeStatus = async (req: Request, res: Response) => {
     res.json([
       { name: '/supply_manager_node', info: { subscribers: [], publishers: [], services: [], actionServers: [], actionClients: [] } },
       { name: '/task_manager_node', info: { subscribers: [], publishers: [], services: [], actionServers: [], actionClients: [] } },
-      { name: '/aruco_pose_estimator_node', info: { subscribers: [], publishers: [], services: [], actionServers: [], actionClients: [] } }
+      { name: '/aruco_pose_estimator_node', info: { subscribers: [], publishers: [], services: [], actionServers: [], actionClients: [] } },
+      { name: '/water_level_monitor_node', info: { subscribers: [], publishers: [], services: [], actionServers: [], actionClients: [] } }
     ]);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch node status' });
   }
+};
+
+// 水位监控状态
+interface WaterLevelData {
+  level_cm: number;
+  percentage: number;
+  status: 'critical' | 'low' | 'normal' | 'high';
+  timestamp: number;
+  hardware_connected: boolean;
+}
+
+// 全局水位状态缓存
+let latestWaterLevel: WaterLevelData | null = null;
+
+// 获取水位状态
+export const getWaterLevelStatus = async (req: Request, res: Response) => {
+  try {
+    // 返回缓存的水位状态
+    const waterLevel = latestWaterLevel || {
+      level_cm: 0,
+      percentage: 0,
+      status: 'normal' as const,
+      timestamp: Date.now() / 1000,
+      hardware_connected: false
+    };
+    
+    res.json({
+      water: waterLevel,
+      lastUpdate: new Date(waterLevel.timestamp * 1000).toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch water level status' });
+  }
+};
+
+// 获取水位历史数据（最近24小时）
+export const getWaterLevelHistory = async (req: Request, res: Response) => {
+  try {
+    // 返回示例历史数据
+    const history = [];
+    const now = Date.now();
+    
+    // 生成最近24小时的数据点（每小时一个）
+    for (let i = 24; i >= 0; i--) {
+      const timestamp = now - i * 3600 * 1000;
+      const percentage = 50 + Math.random() * 40; // 50-90% 之间的随机值
+      const level_cm = 5 + (percentage / 100) * 91; // 5-96cm 之间的对应值
+      
+      let status: 'critical' | 'low' | 'normal' | 'high';
+      if (percentage < 10) {
+        status = 'critical';
+      } else if (percentage < 30) {
+        status = 'low';
+      } else if (percentage < 80) {
+        status = 'normal';
+      } else {
+        status = 'high';
+      }
+      
+      history.push({
+        timestamp: timestamp / 1000,
+        level_cm: Math.round(level_cm * 100) / 100,
+        percentage: Math.round(percentage * 10) / 10,
+        status
+      });
+    }
+    
+    res.json({
+      history,
+      count: history.length
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch water level history' });
+  }
+};
+
+// 导出更新水位状态的函数（供rosbridgeService调用）
+export const updateWaterLevelStatus = (data: WaterLevelData) => {
+  latestWaterLevel = data;
 };
