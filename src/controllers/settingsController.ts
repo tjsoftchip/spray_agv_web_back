@@ -125,6 +125,12 @@ export const initializeDefaultConfigs = async () => {
       // 系统配置
       { key: 'hostname', value: 'KWS-R2', description: '系统主机名', category: 'system' },
       
+      // 网络配置
+      { key: 'relay_ip', value: '192.168.4.1', description: '补水站继电器IP地址', category: 'network' },
+      { key: 'relay_port', value: '80', description: '补水站继电器端口', category: 'network' },
+      { key: 'charging_ip', value: '192.168.1.100', description: '充电桩IP地址', category: 'network' },
+      { key: 'charging_port', value: '502', description: '充电桩Modbus端口', category: 'network' },
+      
       // 支架参数
       { key: 'bracket_min_height', value: '1.8', description: '支架最小高度(米)', category: 'bracket' },
       { key: 'bracket_max_height', value: '2.8', description: '支架最大高度(米)', category: 'bracket' },

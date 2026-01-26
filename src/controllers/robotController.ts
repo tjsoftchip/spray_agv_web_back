@@ -3,15 +3,400 @@ import rosbridgeService from '../services/rosbridgeService';
 
 export const getRobotStatus = async (req: Request, res: Response) => {
   try {
+    const connected = rosbridgeService.isConnected();
+    
+    // 从 rosbridge 获取真实的电池和水位数据
+    let batteryLevel = 85;
+    let waterLevel = 70;
+    
+    if (connected) {
+      try {
+        // 获取电池电量 - 使用 tryGetPoseFromTopic 类似的方法
+        const batteryResult = await new Promise((resolve) => {
+          let timeoutId: NodeJS.Timeout;
+          let messageReceived = false;
+
+          const cleanup = () => {
+            if (timeoutId) clearTimeout(timeoutId);
+            rosbridgeService.unsubscribeTopic('/battery_level');
+          };
+
+          timeoutId = setTimeout(() => {
+            if (!messageReceived) {
+              cleanup();
+              resolve(null);
+            }
+          }, 2000);
+
+          const tempHandler = (data: any) => {
+            try {
+              const message = JSON.parse(data.toString());
+              if (message.topic === '/battery_level' && message.msg) {
+                messageReceived = true;
+                cleanup();
+                resolve(message.msg.data);
+              }
+            } catch (error) {
+              console.error('Error parsing battery level:', error);
+            }
+          };
+
+          const rosbridge = rosbridgeService.getRosbridge();
+          if (rosbridge) {
+            rosbridge.on('message', tempHandler);
+            rosbridgeService.subscribeTopic('/battery_level', 'std_msgs/Float32');
+
+            setTimeout(() => {
+              rosbridge.removeListener('message', tempHandler);
+            }, 2000);
+          } else {
+            resolve(null);
+          }
+        });
+        
+        if (batteryResult !== null) {
+          batteryLevel = Math.round(batteryResult as number);
+        }
+      } catch (error) {
+        console.log('Failed to get battery level, using default value');
+      }
+      
+      try {
+        // 获取水位
+        const waterResult = await new Promise((resolve) => {
+          let timeoutId: NodeJS.Timeout;
+          let messageReceived = false;
+
+          const cleanup = () => {
+            if (timeoutId) clearTimeout(timeoutId);
+            rosbridgeService.unsubscribeTopic('/water_monitor/level');
+          };
+
+          timeoutId = setTimeout(() => {
+            if (!messageReceived) {
+              cleanup();
+              resolve(null);
+            }
+          }, 2000);
+
+          const tempHandler = (data: any) => {
+            try {
+              const message = JSON.parse(data.toString());
+              if (message.topic === '/water_monitor/level' && message.msg) {
+                messageReceived = true;
+                cleanup();
+                resolve(message.msg.data);
+              }
+            } catch (error) {
+              console.error('Error parsing water level:', error);
+            }
+          };
+
+          const rosbridge = rosbridgeService.getRosbridge();
+          if (rosbridge) {
+            rosbridge.on('message', tempHandler);
+            rosbridgeService.subscribeTopic('/water_monitor/level', 'std_msgs/Float32');
+
+            setTimeout(() => {
+              rosbridge.removeListener('message', tempHandler);
+            }, 2000);
+          } else {
+            resolve(null);
+          }
+        });
+        
+        if (waterResult !== null) {
+          waterLevel = Math.round(waterResult as number);
+        }
+      } catch (error) {
+        console.log('Failed to get water level, using default value');
+      }
+    }
+    
     res.json({
-      connected: rosbridgeService.isConnected(),
+      connected,
       position: { x: 0, y: 0, z: 0 },
-      battery: 85,
-      waterLevel: 70,
+      battery: batteryLevel,
+      waterLevel: waterLevel,
       mode: 'auto',
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to get robot status' });
+  }
+};
+
+// 获取电池状态详情
+export const getBatteryStatus = async (req: Request, res: Response) => {
+  try {
+    if (!rosbridgeService.isConnected()) {
+      return res.status(503).json({ 
+        error: 'ROS bridge not connected',
+        batteryLevel: 0,
+        voltage: 0,
+        current: 0,
+        temperature: 0,
+        chargeStatus: 'unknown'
+      });
+    }
+    
+    try {
+      // 获取电池完整状态
+      const batteryResult = await new Promise((resolve) => {
+        let timeoutId: NodeJS.Timeout;
+        let messageReceived = false;
+
+        const cleanup = () => {
+          if (timeoutId) clearTimeout(timeoutId);
+          rosbridgeService.unsubscribeTopic('/battery_status');
+        };
+
+        timeoutId = setTimeout(() => {
+          if (!messageReceived) {
+            cleanup();
+            resolve(null);
+          }
+        }, 2000);
+
+        const tempHandler = (data: any) => {
+          try {
+            const message = JSON.parse(data.toString());
+            if (message.topic === '/battery_status' && message.msg) {
+              messageReceived = true;
+              cleanup();
+              resolve(message.msg);
+            }
+          } catch (error) {
+            console.error('Error parsing battery status:', error);
+          }
+        };
+
+        const rosbridge = rosbridgeService.getRosbridge();
+        if (rosbridge) {
+          rosbridge.on('message', tempHandler);
+          rosbridgeService.subscribeTopic('/battery_status', 'sensor_msgs/BatteryState');
+
+          setTimeout(() => {
+            rosbridge.removeListener('message', tempHandler);
+          }, 2000);
+        } else {
+          resolve(null);
+        }
+      }) as any;
+      
+      if (batteryResult) {
+        res.json({
+          batteryLevel: Math.round(batteryResult.percentage || 0),
+          voltage: batteryResult.voltage || 0,
+          current: batteryResult.current || 0,
+          temperature: batteryResult.temperature || 0,
+          charge: batteryResult.charge || 0,
+          capacity: batteryResult.capacity || 0,
+          power: batteryResult.power_supply_status === 1 ? (batteryResult.voltage * batteryResult.current) : 0,
+          chargeStatus: batteryResult.power_supply_status === 1 ? 'charging' 
+                       : batteryResult.power_supply_status === 2 ? 'discharging' 
+                       : 'idle',
+          lastUpdate: new Date().toISOString()
+        });
+      } else {
+        // 如果获取失败，返回默认值
+        res.json({
+          batteryLevel: 0,
+          voltage: 0,
+          current: 0,
+          temperature: 0,
+          chargeStatus: 'unknown',
+          lastUpdate: new Date().toISOString()
+        });
+      }
+    } catch (error: any) {
+      console.error('Failed to get battery status:', error);
+      res.json({
+        batteryLevel: 0,
+        voltage: 0,
+        current: 0,
+        temperature: 0,
+        chargeStatus: 'error',
+        error: error.message,
+        lastUpdate: new Date().toISOString()
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get battery status' });
+  }
+};
+
+// 获取水位状态详情
+export const getWaterStatus = async (req: Request, res: Response) => {
+  try {
+    if (!rosbridgeService.isConnected()) {
+      return res.status(503).json({ 
+        error: 'ROS bridge not connected',
+        waterLevel: 0,
+        status: 'unknown'
+      });
+    }
+    
+    try {
+      // 获取水位数据
+      const waterResult = await new Promise((resolve) => {
+        let timeoutId: NodeJS.Timeout;
+        let messageReceived = false;
+
+        const cleanup = () => {
+          if (timeoutId) clearTimeout(timeoutId);
+          rosbridgeService.unsubscribeTopic('/water_monitor/level');
+        };
+
+        timeoutId = setTimeout(() => {
+          if (!messageReceived) {
+            cleanup();
+            resolve(null);
+          }
+        }, 2000);
+
+        const tempHandler = (data: any) => {
+          try {
+            const message = JSON.parse(data.toString());
+            if (message.topic === '/water_monitor/level' && message.msg) {
+              messageReceived = true;
+              cleanup();
+              resolve(message.msg.data);
+            }
+          } catch (error) {
+            console.error('Error parsing water level:', error);
+          }
+        };
+
+        const rosbridge = rosbridgeService.getRosbridge();
+        if (rosbridge) {
+          rosbridge.on('message', tempHandler);
+          rosbridgeService.subscribeTopic('/water_monitor/level', 'std_msgs/Float32');
+
+          setTimeout(() => {
+            rosbridge.removeListener('message', tempHandler);
+          }, 2000);
+        } else {
+          resolve(null);
+        }
+      });
+      
+      // 获取水位状态
+      const statusResult = await new Promise((resolve) => {
+        let timeoutId: NodeJS.Timeout;
+        let messageReceived = false;
+
+        const cleanup = () => {
+          if (timeoutId) clearTimeout(timeoutId);
+          rosbridgeService.unsubscribeTopic('/water_monitor/status');
+        };
+
+        timeoutId = setTimeout(() => {
+          if (!messageReceived) {
+            cleanup();
+            resolve(null);
+          }
+        }, 2000);
+
+        const tempHandler = (data: any) => {
+          try {
+            const message = JSON.parse(data.toString());
+            if (message.topic === '/water_monitor/status' && message.msg) {
+              messageReceived = true;
+              cleanup();
+              resolve(message.msg.data);
+            }
+          } catch (error) {
+            console.error('Error parsing water status:', error);
+          }
+        };
+
+        const rosbridge = rosbridgeService.getRosbridge();
+        if (rosbridge) {
+          rosbridge.on('message', tempHandler);
+          rosbridgeService.subscribeTopic('/water_monitor/status', 'std_msgs/String');
+
+          setTimeout(() => {
+            rosbridge.removeListener('message', tempHandler);
+          }, 2000);
+        } else {
+          resolve(null);
+        }
+      });
+      
+      // 获取低水位告警
+      const lowResult = await new Promise((resolve) => {
+        let timeoutId: NodeJS.Timeout;
+        let messageReceived = false;
+
+        const cleanup = () => {
+          if (timeoutId) clearTimeout(timeoutId);
+          rosbridgeService.unsubscribeTopic('/water_low');
+        };
+
+        timeoutId = setTimeout(() => {
+          if (!messageReceived) {
+            cleanup();
+            resolve(null);
+          }
+        }, 2000);
+
+        const tempHandler = (data: any) => {
+          try {
+            const message = JSON.parse(data.toString());
+            if (message.topic === '/water_low' && message.msg) {
+              messageReceived = true;
+              cleanup();
+              resolve(message.msg.data);
+            }
+          } catch (error) {
+            console.error('Error parsing water low:', error);
+          }
+        };
+
+        const rosbridge = rosbridgeService.getRosbridge();
+        if (rosbridge) {
+          rosbridge.on('message', tempHandler);
+          rosbridgeService.subscribeTopic('/water_low', 'std_msgs/Bool');
+
+          setTimeout(() => {
+            rosbridge.removeListener('message', tempHandler);
+          }, 2000);
+        } else {
+          resolve(null);
+        }
+      });
+      
+      if (waterResult !== null) {
+        const level = waterResult as number;
+        const status = statusResult || 'unknown';
+        const isLow = lowResult || false;
+        
+        res.json({
+          waterLevel: Math.round(level),
+          status: status,
+          isLow: isLow,
+          lastUpdate: new Date().toISOString()
+        });
+      } else {
+        res.json({
+          waterLevel: 0,
+          status: 'unknown',
+          isLow: false,
+          lastUpdate: new Date().toISOString()
+        });
+      }
+    } catch (error: any) {
+      console.error('Failed to get water status:', error);
+      res.json({
+        waterLevel: 0,
+        status: 'error',
+        isLow: false,
+        error: error.message,
+        lastUpdate: new Date().toISOString()
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get water status' });
   }
 };
 

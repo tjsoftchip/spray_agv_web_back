@@ -396,3 +396,320 @@ export const getWaterLevelHistory = async (req: Request, res: Response) => {
 export const updateWaterLevelStatus = (data: WaterLevelData) => {
   latestWaterLevel = data;
 };
+
+// ==================== 补水站继电器控制 ====================
+
+interface RelayStatus {
+  status: string;
+  relay: boolean;
+  mode: number;
+  ip: string;
+  apIp: string;
+}
+
+interface WifiInfo {
+  status: string;
+  sta: {
+    connected: boolean;
+    ssid: string;
+    ip: string;
+  };
+  ap: {
+    ssid: string;
+    ip: string;
+    stations: number;
+  };
+}
+
+// 获取补水站继电器状态
+export const getRelayStatus = async (req: Request, res: Response) => {
+  try {
+    const { relayIp } = req.query;
+    const ipAddress = relayIp || process.env.RELAY_IP || '192.168.4.1';
+    
+    console.log('[Relay Status] Received params:', req.query);
+    console.log('[Relay Status] Using IP:', ipAddress);
+    
+    // 设置3秒超时（减少超时时间，避免前端超时）
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    
+    const response = await fetch(`http://${ipAddress}/relay/status`, {
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json() as RelayStatus;
+    
+    // 添加设备连接状态
+    res.json({
+      ...data,
+      connected: true,
+      ip: ipAddress,
+      lastUpdate: new Date().toISOString()
+    });
+  } catch (error: any) {
+    // 只在特定情况下输出错误日志，减少日志 spam
+    if (error.name !== 'AbortError' && error.message !== 'fetch failed') {
+      console.error('[Relay Status] Failed to connect to', req.query.relayIp || process.env.RELAY_IP || '192.168.4.1', ':', error.message);
+    }
+    
+    // 返回设备离线状态
+    const ipAddress = req.query.relayIp || process.env.RELAY_IP || '192.168.4.1';
+    res.json({
+      status: 'error',
+      relay: false,
+      mode: 0,
+      ip: ipAddress,
+      apIp: '',
+      connected: false,
+      error: error.name === 'AbortError' ? 'Connection timeout' : error.message,
+      lastUpdate: new Date().toISOString()
+    });
+  }
+};
+
+// 打开补水站继电器（开始注水）
+export const startWateringRelay = async (req: Request, res: Response) => {
+  try {
+    const { relayIp } = req.body;
+    const ipAddress = relayIp || process.env.RELAY_IP || '192.168.4.1';
+    
+    const response = await fetch(`http://${ipAddress}/relay/on`);
+    const data = await response.json() as RelayStatus;
+    
+    if (data.status === 'success') {
+      res.json({ success: true, message: '补水站继电器已打开，开始注水', relay: true });
+    } else {
+      res.status(500).json({ error: 'Failed to open relay', relay: false });
+    }
+  } catch (error) {
+    console.error('Failed to open relay:', error);
+    res.status(500).json({ error: 'Failed to open relay', relay: false });
+  }
+};
+
+// 关闭补水站继电器（停止注水）
+export const stopWateringRelay = async (req: Request, res: Response) => {
+  try {
+    const { relayIp } = req.body;
+    const ipAddress = relayIp || process.env.RELAY_IP || '192.168.4.1';
+    
+    const response = await fetch(`http://${ipAddress}/relay/off`);
+    const data = await response.json() as RelayStatus;
+    
+    if (data.status === 'success') {
+      res.json({ success: true, message: '补水站继电器已关闭，停止注水', relay: false });
+    } else {
+      res.status(500).json({ error: 'Failed to close relay', relay: true });
+    }
+  } catch (error) {
+    console.error('Failed to close relay:', error);
+    res.status(500).json({ error: 'Failed to close relay', relay: true });
+  }
+};
+
+// 获取补水站WiFi信息
+export const getRelayWifiInfo = async (req: Request, res: Response) => {
+  try {
+    const { relayIp } = req.query;
+    const ipAddress = relayIp || process.env.RELAY_IP || '192.168.4.1';
+    
+    const response = await fetch(`http://${ipAddress}/wifi/info`);
+    const data = await response.json() as WifiInfo;
+    
+    res.json(data);
+  } catch (error) {
+    console.error('Failed to get relay WiFi info:', error);
+    res.status(500).json({ error: 'Failed to get relay WiFi info' });
+  }
+};
+
+// ==================== 充电桩Modbus控制 ====================
+
+interface ChargingStatus {
+  chargingStatus: number; // 0 未在充电 1 正在充电 2 充电完成
+  brushStatus: number; // 0 已经缩回 1 正在伸出 2 正在缩回 3 已经伸出
+  chargingMode: number; // 0 手动 1 自动
+  batteryVoltage: number; // 电池电压*10
+  chargingCurrent: number; // 充电电流(mA)
+  endCurrent: number; // 充电结束电流(mA)
+  heartbeat: number; // 心跳，1秒加一
+  lastUpdate: string;
+}
+
+// 全局充电桩状态缓存
+let latestChargingStatus: ChargingStatus | null = null;
+
+// 获取充电桩状态
+export const getChargingStatus = async (req: Request, res: Response) => {
+  const startTime = Date.now();
+  const { chargingIp } = req.query;
+  const ipAddress = chargingIp || process.env.CHARGING_IP || '192.168.0.95';
+  const port = parseInt(process.env.CHARGING_PORT || '502');
+  
+  console.log('[Charging Status] Received params:', req.query);
+  console.log('[Charging Status] Using IP:', ipAddress, 'Port:', port);
+  
+  try {
+    // 通过代理服务器获取充电桩状态
+    const proxyUrl = `http://localhost:5001/api/charging/status?ip=${ipAddress}&port=${port}`;
+    console.log('[Charging Status] Requesting via proxy:', proxyUrl);
+    
+    const response = await fetch(proxyUrl);
+    const result = await response.json() as { success: boolean; data: any; error?: string };
+    
+    if (!result.success) {
+      throw new Error(result.error || 'Proxy request failed');
+    }
+    
+    const status: ChargingStatus = {
+      chargingStatus: result.data.chargingStatus,
+      brushStatus: result.data.brushStatus,
+      batteryVoltage: result.data.batteryVoltage,
+      chargingCurrent: result.data.chargingCurrent,
+      endCurrent: result.data.endCurrent,
+      chargingMode: result.data.chargingMode,
+      heartbeat: result.data.heartbeat,
+      lastUpdate: new Date().toISOString()
+    };
+    
+    // 缓存状态
+    latestChargingStatus = status;
+    
+    const elapsed = Date.now() - startTime;
+    console.log('[Charging Status] Success! Elapsed:', elapsed, 'ms');
+    
+    res.json({
+      ...status,
+      connected: true,
+      ipAddress,
+      port,
+      responseTime: elapsed
+    });
+  } catch (error: any) {
+    const elapsed = Date.now() - startTime;
+    console.error('[Charging Status] Failed after', elapsed, 'ms:', error.message);
+    
+    // 返回设备离线状态
+    res.json({
+      chargingStatus: 0,
+      brushStatus: 0,
+      chargingMode: 0,
+      batteryVoltage: 0,
+      chargingCurrent: 0,
+      endCurrent: 0,
+      heartbeat: 0,
+      lastUpdate: new Date().toISOString(),
+      connected: false,
+      error: error.message || 'Unknown error',
+      ipAddress,
+      port,
+      responseTime: elapsed
+    });
+  }
+};
+
+// 开始充电
+export const startCharging = async (req: Request, res: Response) => {
+  const { chargingIp } = req.body;
+  const ipAddress = chargingIp || process.env.CHARGING_IP || '192.168.0.95';
+  const port = parseInt(process.env.CHARGING_PORT || '502');
+  
+  console.log('[Start Charging] IP:', ipAddress, 'Port:', port);
+  
+  try {
+    // 通过代理服务器开始充电
+    const proxyUrl = 'http://localhost:5001/api/charging/start';
+    console.log('[Start Charging] Requesting via proxy:', proxyUrl);
+    
+    const response = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ ip: ipAddress, port })
+    });
+    
+    const result = await response.json() as { success: boolean; error?: string };
+    
+    if (!result.success) {
+      throw new Error(result.error || 'Proxy request failed');
+    }
+    
+    console.log('[Start Charging] Success');
+    res.json({ success: true, message: '充电桩已启动' });
+  } catch (error: any) {
+    console.error('[Start Charging] Failed:', error.message);
+    res.status(500).json({ 
+      error: 'Failed to start charging', 
+      message: error.message,
+      ipAddress,
+      port
+    });
+  }
+};
+
+// 停止充电
+export const stopCharging = async (req: Request, res: Response) => {
+  const { chargingIp } = req.body;
+  const ipAddress = chargingIp || process.env.CHARGING_IP || '192.168.0.95';
+  const port = parseInt(process.env.CHARGING_PORT || '502');
+  
+  console.log('[Stop Charging] IP:', ipAddress, 'Port:', port);
+  
+  try {
+    // 通过代理服务器停止充电
+    const proxyUrl = 'http://localhost:5001/api/charging/stop';
+    console.log('[Stop Charging] Requesting via proxy:', proxyUrl);
+    
+    const response = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ ip: ipAddress, port })
+    });
+    
+    const result = await response.json() as { success: boolean; error?: string };
+    
+    if (!result.success) {
+      throw new Error(result.error || 'Proxy request failed');
+    }
+    
+    console.log('[Stop Charging] Success');
+    res.json({ success: true, message: '充电桩已停止' });
+  } catch (error: any) {
+    console.error('[Stop Charging] Failed:', error.message);
+    res.status(500).json({ 
+      error: 'Failed to stop charging', 
+      message: error.message,
+      ipAddress,
+      port
+    });
+  }
+};
+
+// 导出更新充电状态的函数（供rosbridgeService调用）
+export const updateChargingStatus = (data: Partial<ChargingStatus>) => {
+  if (latestChargingStatus) {
+    latestChargingStatus = { ...latestChargingStatus, ...data, lastUpdate: new Date().toISOString() };
+  } else {
+    latestChargingStatus = {
+      chargingStatus: 0,
+      brushStatus: 0,
+      chargingMode: 0,
+      batteryVoltage: 0,
+      chargingCurrent: 0,
+      endCurrent: 0,
+      heartbeat: 0,
+      lastUpdate: new Date().toISOString(),
+      ...data
+    };
+  }
+};

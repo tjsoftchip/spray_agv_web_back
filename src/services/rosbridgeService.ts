@@ -269,7 +269,13 @@ class RosbridgeService {
   // 获取机器人当前位姿（带回退机制）
   public async getRobotPose(): Promise<any> {
     if (!this.isConnected()) {
-      console.warn('[getRobotPose] Rosbridge not connected');
+      // 限制错误日志频率
+      const now = Date.now();
+      const lastWarn = this.messageThrottle.get('getRobotPose_not_connected') || 0;
+      if (now - lastWarn > 10000) { // 每10秒最多一次警告
+        console.warn('[getRobotPose] Rosbridge not connected');
+        this.messageThrottle.set('getRobotPose_not_connected', now);
+      }
       return null;
     }
 
@@ -309,7 +315,13 @@ class RosbridgeService {
     }
 
     // 4. 都失败，返回 null
-    console.warn('[getRobotPose] Failed to get pose from /amcl_pose, /odometry/filtered, and /odom');
+    // 限制错误日志频率
+    const now = Date.now();
+    const lastWarn = this.messageThrottle.get('getRobotPose_failed') || 0;
+    if (now - lastWarn > 30000) { // 每30秒最多一次警告
+      console.warn('[getRobotPose] Failed to get pose from /amcl_pose, /odometry/filtered, and /odom');
+      this.messageThrottle.set('getRobotPose_failed', now);
+    }
     return null;
   }
 

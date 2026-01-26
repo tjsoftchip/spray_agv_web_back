@@ -7,6 +7,8 @@ const router = Router();
 router.use(authenticate);
 
 router.get('/status', robotController.getRobotStatus);
+router.get('/battery/status', robotController.getBatteryStatus);
+router.get('/water/status', robotController.getWaterStatus);
 router.post('/motion/teleop', robotController.controlMotion);
 router.post('/motion/stop', robotController.stopMotion);
 router.post('/control-spray', robotController.controlSpray);
