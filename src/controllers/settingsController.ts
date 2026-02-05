@@ -131,11 +131,6 @@ export const initializeDefaultConfigs = async () => {
       { key: 'charging_ip', value: '192.168.1.100', description: '充电桩IP地址', category: 'network' },
       { key: 'charging_port', value: '502', description: '充电桩Modbus端口', category: 'network' },
       
-      // 支架参数
-      { key: 'bracket_min_height', value: '1.8', description: '支架最小高度(米)', category: 'bracket' },
-      { key: 'bracket_max_height', value: '2.8', description: '支架最大高度(米)', category: 'bracket' },
-      { key: 'bracket_default_height', value: '1.8', description: '支架默认高度(米)', category: 'bracket' },
-      
       // 运动参数
       { key: 'max_linear_speed', value: '0.35', description: '最大线速度(米/秒)', category: 'motion' },
       { key: 'max_angular_speed', value: '1.2', description: '最大角速度(弧度/秒)', category: 'motion' },

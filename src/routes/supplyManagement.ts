@@ -4,7 +4,7 @@ import { authenticate } from '../middleware/auth';
 
 const router = Router();
 
-// router.use(authenticate); // 临时禁用认证以便测试
+router.use(authenticate);
 
 // GPU监控
 router.get('/gpu/metrics', supplyManagementController.getGPUMetrics);
