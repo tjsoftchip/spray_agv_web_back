@@ -100,7 +100,7 @@ app.get('/api/health', async (req, res) => {
   res.json(health);
 });
 
-const PORT = process.env.PORT || 3005;
+const PORT = process.env.PORT || 3000;
 
 const startServer = async (): Promise<void> => {
   try {
