@@ -26,6 +26,8 @@ import obstacleRoutes from './routes/obstacles';
 import settingsRoutes from './routes/settings';
 import pathGeneratorRoutes from './routes/pathGenerator';
 import pathSMIntegrationRoutes from './routes/pathSMIntegration';
+import gpsMappingRoutes from './routes/gpsMapping';
+import jobPlanningRoutes from './routes/jobPlanning';
 
 dotenv.config();
 
@@ -81,6 +83,8 @@ app.use('/api/obstacles', obstacleRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/path', pathGeneratorRoutes);
 app.use('/api/path-sm', pathSMIntegrationRoutes);
+app.use('/api/gps-mapping', gpsMappingRoutes);
+app.use('/api/job', jobPlanningRoutes);
 
 app.get('/api/health', async (req, res) => {
   const health = {
