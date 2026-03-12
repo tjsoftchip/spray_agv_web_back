@@ -60,8 +60,21 @@ class RosbridgeService {
         
         this.subscribeTopic('/navigation_task/status', 'std_msgs/String');
         this.subscribeTopic('/obstacle_detection', 'std_msgs/String');
-        this.subscribeTopic('/water_level', 'std_msgs/Float32');
-        console.log('Subscribed to navigation, obstacle detection and water level topics');
+        // 使用RELIABLE QoS订阅水位话题（匹配driver_node发布者的QoS）
+        this.subscribeTopic('/water_level', 'std_msgs/Float32', { 
+          qos: { 
+            reliability: { type: 'reliable' } 
+          } 
+        });
+        // 订阅GPS状态话题
+        this.subscribeTopic('/gps/status', 'std_msgs/String');
+        // 使用RELIABLE QoS订阅电池话题
+        this.subscribeTopic('/battery_level', 'std_msgs/Float32', { 
+          qos: { 
+            reliability: { type: 'reliable' } 
+          } 
+        });
+        console.log('Subscribed to navigation, obstacle detection, water level, GPS status and battery level topics');
       });
 
       this.rosbridge.on('message', (data: WebSocket.Data) => {
@@ -186,12 +199,16 @@ class RosbridgeService {
     this.sendToRos(rosMessage);
   }
 
-  public subscribeTopic(topic: string, messageType: string): void {
-    const rosMessage = {
+  public subscribeTopic(topic: string, messageType: string, options?: any): void {
+    const rosMessage: any = {
       op: 'subscribe',
       topic,
       type: messageType,
     };
+    // 如果指定了QoS选项，添加到消息中
+    if (options) {
+      rosMessage.options = options;
+    }
     this.sendToRos(rosMessage);
   }
 
