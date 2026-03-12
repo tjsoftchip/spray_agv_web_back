@@ -354,6 +354,7 @@ export const endRoadRecording = async (req: Request, res: Response) => {
       session.roads = session.roads.filter(r => r.id !== session.currentRoadId);
       session.currentRoadId = null;
       session.currentRoadType = null;
+      session.status = session.origin ? 'idle' : 'origin_calibration';
       
       return res.json({
         success: false,
@@ -374,6 +375,7 @@ export const endRoadRecording = async (req: Request, res: Response) => {
     session.currentRoadId = null;
     session.currentRoadType = null;
     session.recordingStartTime = null;
+    session.status = 'idle'; // 道路采集完成，状态重置为idle
     session.lastUpdateTime = Date.now();
 
     // 调用ROS2服务停止GPS记录

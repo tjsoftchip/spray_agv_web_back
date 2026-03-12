@@ -18,6 +18,9 @@ router.post('/restart-layer', systemController.restartLayer);
 // 获取系统日志
 router.get('/logs', systemController.getSystemLogs);
 
+// 记录客户端错误日志
+router.post('/logs/client-error', systemController.logClientError);
+
 // 获取节点列表
 router.get('/nodes', systemController.getNodeList);
 

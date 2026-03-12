@@ -532,3 +532,27 @@ export const updateSystemConfig = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Failed to update system config' });
   }
 };
+
+// 记录客户端错误日志
+export const logClientError = async (req: Request, res: Response) => {
+  try {
+    const { errors } = req.body;
+    
+    if (errors && Array.isArray(errors)) {
+      errors.forEach((error: any) => {
+        console.error('[Client Error]', {
+          message: error.message,
+          url: error.url,
+          userAgent: error.userAgent,
+          timestamp: error.timestamp,
+          stack: error.stack?.substring(0, 500) // 限制日志长度
+        });
+      });
+    }
+    
+    res.json({ success: true, logged: errors?.length || 0 });
+  } catch (error) {
+    console.error('Error logging client error:', error);
+    res.status(500).json({ error: 'Failed to log client error' });
+  }
+};
