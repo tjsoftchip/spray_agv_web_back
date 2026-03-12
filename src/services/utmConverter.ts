@@ -218,18 +218,47 @@ export class UTMConverter {
 
   /**
    * 计算两个GPS点之间的方位角（度）
-   */
-  public calculateBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
-    const lat1Rad = this.degToRad(lat1);
-    const lat2Rad = this.degToRad(lat2);
-    const dLonRad = this.degToRad(lon2 - lon1);
-
-    const y = Math.sin(dLonRad) * Math.cos(lat2Rad);
-    const x = Math.cos(lat1Rad) * Math.sin(lat2Rad)
-      - Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLonRad);
-
-    const bearing = this.radToDeg(Math.atan2(y, x));
-
-    return (bearing + 360) % 360;
+     */
+    public calculateBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
+      const lat1Rad = this.degToRad(lat1);
+      const lat2Rad = this.degToRad(lat2);
+      const dLonRad = this.degToRad(lon2 - lon1);
+  
+      const y = Math.sin(dLonRad) * Math.cos(lat2Rad);
+      const x = Math.cos(lat1Rad) * Math.sin(lat2Rad)
+        - Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLonRad);
+  
+      const bearing = this.radToDeg(Math.atan2(y, x));
+  
+      return (bearing + 360) % 360;
+    }
+  
+    /**
+     * 将GPS坐标转换为UTM坐标（简化接口）
+     * 返回zone, easting, northing
+     */
+    public toUTM(latitude: number, longitude: number): { zone: number; easting: number; northing: number } {
+      const utm = this.latLonToUTM(latitude, longitude);
+      return {
+        zone: utm.zoneNumber,
+        easting: utm.easting,
+        northing: utm.northing
+      };
+    }
+  
+    /**
+     * 将UTM坐标转换为GPS坐标（简化接口）
+     */
+    public toLatLon(utm: { zone: number; easting: number; northing: number }): { latitude: number; longitude: number; altitude: number } {
+      // 根据纬度确定zone letter
+      const approxLat = (utm.northing - 10000000) / 111000; // 粗略估计
+      const zoneLetter = this.getUTMLetterDesignator(approxLat);
+      
+      const result = this.utmToLatLon(utm.easting, utm.northing, utm.zone, zoneLetter);
+      return {
+        latitude: result.latitude,
+        longitude: result.longitude,
+        altitude: 0
+      };
+    }
   }
-}

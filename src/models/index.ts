@@ -10,6 +10,7 @@ import TaskQueue from './TaskQueue';
 import MapModel from './Map';
 import Schedule from './Schedule';
 import SystemConfig from './SystemConfig';
+import GPSMap from './GPSMap';
 
 const models = {
   User,
@@ -23,6 +24,7 @@ const models = {
   MapModel,
   Schedule,
   SystemConfig,
+  GPSMap,
 };
 
 // 定义模型关联
@@ -60,5 +62,5 @@ export const initDatabase = async (): Promise<void> => {
   }
 };
 
-export { sequelize, User, Template, Task, SupplyStation, BeamYard, NavigationPoint, RoadSegment, TaskQueue, MapModel, Schedule, SystemConfig };
+export { sequelize, User, Template, Task, SupplyStation, BeamYard, NavigationPoint, RoadSegment, TaskQueue, MapModel, Schedule, SystemConfig, GPSMap };
 export default models;
