@@ -60,7 +60,7 @@ class RosbridgeService {
         
         this.subscribeTopic('/navigation_task/status', 'std_msgs/String');
         this.subscribeTopic('/obstacle_detection', 'std_msgs/String');
-        this.subscribeTopic('/water_monitor/level', 'std_msgs/String');
+        this.subscribeTopic('/water_level', 'std_msgs/Float32');
         console.log('Subscribed to navigation, obstacle detection and water level topics');
       });
 
@@ -116,9 +116,14 @@ class RosbridgeService {
               } catch (e) {
                 console.error('Parse obstacle detection error:', e);
               }
-            } else if (topic === '/water_monitor/level' && message.msg) {
+            } else if (topic === '/water_level' && message.msg) {
               try {
-                const waterData = JSON.parse(message.msg.data);
+                // 水位数据是 Float32 格式，不是 JSON
+                const waterData = {
+                  level: message.msg.data,
+                  percentage: message.msg.data,
+                  timestamp: Date.now()
+                };
                 // 更新全局水位状态
                 const supplyManagementController = require('../controllers/supplyManagementController');
                 supplyManagementController.updateWaterLevelStatus(waterData);

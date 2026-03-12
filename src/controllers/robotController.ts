@@ -69,7 +69,7 @@ export const getRobotStatus = async (req: Request, res: Response) => {
 
           const cleanup = () => {
             if (timeoutId) clearTimeout(timeoutId);
-            rosbridgeService.unsubscribeTopic('/water_monitor/level');
+            rosbridgeService.unsubscribeTopic('/water_level');
           };
 
           timeoutId = setTimeout(() => {
@@ -82,7 +82,7 @@ export const getRobotStatus = async (req: Request, res: Response) => {
           const tempHandler = (data: any) => {
             try {
               const message = JSON.parse(data.toString());
-              if (message.topic === '/water_monitor/level' && message.msg) {
+              if (message.topic === '/water_level' && message.msg) {
                 messageReceived = true;
                 cleanup();
                 resolve(message.msg.data);
@@ -95,7 +95,7 @@ export const getRobotStatus = async (req: Request, res: Response) => {
           const rosbridge = rosbridgeService.getRosbridge();
           if (rosbridge) {
             rosbridge.on('message', tempHandler);
-            rosbridgeService.subscribeTopic('/water_monitor/level', 'std_msgs/Float32');
+            rosbridgeService.subscribeTopic('/water_level', 'std_msgs/Float32');
 
             setTimeout(() => {
               rosbridge.removeListener('message', tempHandler);
@@ -244,7 +244,7 @@ export const getWaterStatus = async (req: Request, res: Response) => {
 
         const cleanup = () => {
           if (timeoutId) clearTimeout(timeoutId);
-          rosbridgeService.unsubscribeTopic('/water_monitor/level');
+          rosbridgeService.unsubscribeTopic('/water_level');
         };
 
         timeoutId = setTimeout(() => {
@@ -257,7 +257,7 @@ export const getWaterStatus = async (req: Request, res: Response) => {
         const tempHandler = (data: any) => {
           try {
             const message = JSON.parse(data.toString());
-            if (message.topic === '/water_monitor/level' && message.msg) {
+            if (message.topic === '/water_level' && message.msg) {
               messageReceived = true;
               cleanup();
               resolve(message.msg.data);
@@ -270,7 +270,7 @@ export const getWaterStatus = async (req: Request, res: Response) => {
         const rosbridge = rosbridgeService.getRosbridge();
         if (rosbridge) {
           rosbridge.on('message', tempHandler);
-          rosbridgeService.subscribeTopic('/water_monitor/level', 'std_msgs/Float32');
+          rosbridgeService.subscribeTopic('/water_level', 'std_msgs/Float32');
 
           setTimeout(() => {
             rosbridge.removeListener('message', tempHandler);
