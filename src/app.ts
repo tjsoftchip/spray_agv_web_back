@@ -105,6 +105,23 @@ app.get('/api/health', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
+
+// 自动检测本机IP地址
+const getLocalIP = (): string => {
+  const os = require('os');
+  const interfaces = os.networkInterfaces();
+  
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      // 跳过内部和非IPv4地址
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return '127.0.0.1';
+};
 
 const startServer = async (): Promise<void> => {
   try {
@@ -121,8 +138,12 @@ const startServer = async (): Promise<void> => {
     scheduleService.start();
     console.log('Schedule service started');
 
-    httpServer.listen(PORT, () => {
+    httpServer.listen(Number(PORT), HOST, () => {
+      const localIP = getLocalIP();
       console.log(`Server is running on port ${PORT}`);
+      console.log(`Listening on: ${HOST}:${PORT}`);
+      console.log(`Local IP: ${localIP}`);
+      console.log(`Access from: http://${localIP}:${PORT}`);
       console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
     });
   } catch (error) {

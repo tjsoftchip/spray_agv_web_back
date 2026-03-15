@@ -4,6 +4,12 @@ import { authenticate } from '../middleware/auth';
 
 const router = Router();
 
+// 本地监控端点（不需要认证）- 用于状态监控页面
+router.get('/status-local', robotController.getRobotStatus);
+router.get('/battery/status-local', robotController.getBatteryStatus);
+router.get('/water/status-local', robotController.getWaterStatus);
+
+// 需要认证的端点
 router.use(authenticate);
 
 router.get('/status', robotController.getRobotStatus);
