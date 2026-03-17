@@ -3,7 +3,7 @@
  * 实现文档 web-gps-mapping-design.md 中定义的核心算法
  */
 
-import { GPSPoint, MapPoint, Road, Intersection, TurnPath, BeamPosition } from '../models/GPSMap';
+import { GPSPoint, MapPoint, Road, RoadPoint, Intersection, TurnPath, BeamPosition } from '../models/GPSMap';
 
 // UTM转换器（使用现有实现）
 import { UTMConverter } from './utmConverter';
@@ -92,12 +92,23 @@ export class CoordinateService {
 /**
  * 交叉点自动识别服务
  * 检测横纵道路的交叉点
+ * 
+ * V2 改进：
+ * 1. 使用线段相交算法替代点对距离算法
+ * 2. 支持路线端点延长查找交叉点
+ * 3. 支持路线拉直预处理
  */
 export class IntersectionDetector {
   private distanceThreshold: number; // 交叉点识别距离阈值（米）
+  private extensionDistance: number; // 路线延长距离（米）
+  private enableExtension: boolean;  // 是否启用路线延长
+  private enableStraighten: boolean; // 是否启用路线拉直
 
-  constructor(distanceThreshold: number = 5.0) {
+  constructor(distanceThreshold: number = 5.0, extensionDistance: number = 2.0) {
     this.distanceThreshold = distanceThreshold;
+    this.extensionDistance = extensionDistance;
+    this.enableExtension = true;
+    this.enableStraighten = true;
   }
 
   /**
@@ -111,8 +122,8 @@ export class IntersectionDetector {
     // 遍历每条纵向道路和横向道路的组合
     for (const longRoad of longitudinalRoads) {
       for (const horRoad of horizontalRoads) {
-        const intersection = this.findIntersection(longRoad, horRoad);
-        if (intersection) {
+        const foundIntersections = this.findAllIntersections(longRoad, horRoad);
+        for (const intersection of foundIntersections) {
           // 检查是否已经存在相近的交叉点
           if (!this.isNearExistingIntersection(intersection, intersections)) {
             intersections.push(intersection);
@@ -125,51 +136,302 @@ export class IntersectionDetector {
   }
 
   /**
-   * 找到两条道路的交叉点
+   * 找到两条道路的所有交叉点（使用线段相交算法）
+   * V2: 支持线段延长和插值计算
    */
-  private findIntersection(longRoad: Road, horRoad: Road): Intersection | null {
-    // 找到纵向道路和横向道路最近的点对
-    let minDistance = Infinity;
-    let bestLongPoint = null;
-    let bestHorPoint = null;
+  private findAllIntersections(longRoad: Road, horRoad: Road): Intersection[] {
+    const intersections: Intersection[] = [];
 
-    for (const longPt of longRoad.points) {
-      for (const horPt of horRoad.points) {
-        const dist = this.distance(longPt.mapXy, horPt.mapXy);
-        if (dist < minDistance) {
-          minDistance = dist;
-          bestLongPoint = longPt;
-          bestHorPoint = horPt;
+    // 可选：先对路线进行拉直处理
+    const longPoints = this.enableStraighten 
+      ? this.straightenRoadPoints(longRoad) 
+      : longRoad.points;
+    const horPoints = this.enableStraighten 
+      ? this.straightenRoadPoints(horRoad) 
+      : horRoad.points;
+
+    if (longPoints.length < 2 || horPoints.length < 2) {
+      return intersections;
+    }
+
+    // 构建线段列表（可选延长）
+    const longSegments = this.buildSegments(longPoints, this.enableExtension);
+    const horSegments = this.buildSegments(horPoints, this.enableExtension);
+
+    // 遍历所有线段对，检测相交
+    for (let i = 0; i < longSegments.length; i++) {
+      const longSeg = longSegments[i];
+      
+      for (let j = 0; j < horSegments.length; j++) {
+        const horSeg = horSegments[j];
+        
+        // 使用线段相交算法
+        const intersectionPoint = this.lineSegmentIntersection(
+          longSeg.start, longSeg.end,
+          horSeg.start, horSeg.end
+        );
+
+        if (intersectionPoint) {
+          // 插值计算GPS坐标
+          const gpsPoint = this.interpolateGPS(
+            intersectionPoint,
+            longSeg, horSeg
+          );
+
+          intersections.push({
+            id: `intersection_${longRoad.id}_${horRoad.id}_${i}_${j}`,
+            type: 'cross',
+            center: {
+              gps: gpsPoint,
+              mapXy: intersectionPoint
+            },
+            connectedRoads: [longRoad.id, horRoad.id]
+          });
         }
       }
     }
 
-    // 如果最近的距离小于阈值，则认为存在交叉点
-    if (minDistance < this.distanceThreshold && bestLongPoint && bestHorPoint) {
-      // 交叉点取两者的中点
-      const centerMapXy: MapPoint = {
-        x: (bestLongPoint.mapXy.x + bestHorPoint.mapXy.x) / 2,
-        y: (bestLongPoint.mapXy.y + bestHorPoint.mapXy.y) / 2
-      };
-      
-      const centerGps: GPSPoint = {
-        latitude: (bestLongPoint.gps.latitude + bestHorPoint.gps.latitude) / 2,
-        longitude: (bestLongPoint.gps.longitude + bestHorPoint.gps.longitude) / 2,
-        altitude: (bestLongPoint.gps.altitude + bestHorPoint.gps.altitude) / 2
-      };
+    return intersections;
+  }
 
+  /**
+   * 线段相交算法
+   * 计算两条线段的交点
+   */
+  private lineSegmentIntersection(
+    p1: MapPoint, p2: MapPoint,
+    p3: MapPoint, p4: MapPoint
+  ): MapPoint | null {
+    const d1x = p2.x - p1.x;
+    const d1y = p2.y - p1.y;
+    const d2x = p4.x - p3.x;
+    const d2y = p4.y - p3.y;
+
+    const cross = d1x * d2y - d1y * d2x;
+
+    // 平行或共线
+    if (Math.abs(cross) < 1e-10) {
+      return null;
+    }
+
+    const dx = p3.x - p1.x;
+    const dy = p3.y - p1.y;
+
+    const t = (dx * d2y - dy * d2x) / cross;
+    const u = (dx * d1y - dy * d1x) / cross;
+
+    // 检查交点是否在两条线段上（包括延长部分）
+    // 使用一个小的容差来处理延长的情况
+    const tolerance = this.enableExtension ? 0.5 : 0.0;
+    
+    if (t >= -tolerance && t <= 1 + tolerance && u >= -tolerance && u <= 1 + tolerance) {
       return {
-        id: `intersection_${longRoad.id}_${horRoad.id}`,
-        type: 'cross', // 十字路口
-        center: {
-          gps: centerGps,
-          mapXy: centerMapXy
-        },
-        connectedRoads: [longRoad.id, horRoad.id]
+        x: p1.x + t * d1x,
+        y: p1.y + t * d1y
       };
     }
 
     return null;
+  }
+
+  /**
+   * 构建线段列表（支持端点延长）
+   */
+  private buildSegments(points: RoadPoint[], extend: boolean): Array<{
+    start: MapPoint;
+    end: MapPoint;
+    startGPS: GPSPoint;
+    endGPS: GPSPoint;
+    startIndex: number;
+    endIndex: number;
+  }> {
+    const segments: Array<{
+      start: MapPoint;
+      end: MapPoint;
+      startGPS: GPSPoint;
+      endGPS: GPSPoint;
+      startIndex: number;
+      endIndex: number;
+    }> = [];
+
+    for (let i = 0; i < points.length - 1; i++) {
+      const start = points[i];
+      const end = points[i + 1];
+
+      segments.push({
+        start: start.mapXy,
+        end: end.mapXy,
+        startGPS: start.gps,
+        endGPS: end.gps,
+        startIndex: i,
+        endIndex: i + 1
+      });
+    }
+
+    // 延长路线两端
+    if (extend && points.length >= 2) {
+      // 延长起点
+      const first = points[0];
+      const second = points[1];
+      const dx = second.mapXy.x - first.mapXy.x;
+      const dy = second.mapXy.y - first.mapXy.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      
+      if (len > 0) {
+        const extendRatio = this.extensionDistance / len;
+        segments.unshift({
+          start: {
+            x: first.mapXy.x - dx * extendRatio,
+            y: first.mapXy.y - dy * extendRatio
+          },
+          end: first.mapXy,
+          startGPS: {
+            latitude: first.gps.latitude - (second.gps.latitude - first.gps.latitude) * extendRatio,
+            longitude: first.gps.longitude - (second.gps.longitude - first.gps.longitude) * extendRatio,
+            altitude: first.gps.altitude
+          },
+          endGPS: first.gps,
+          startIndex: -1, // 延长段标记
+          endIndex: 0
+        });
+      }
+
+      // 延长终点
+      const last = points[points.length - 1];
+      const secondLast = points[points.length - 2];
+      const dx2 = last.mapXy.x - secondLast.mapXy.x;
+      const dy2 = last.mapXy.y - secondLast.mapXy.y;
+      const len2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+      
+      if (len2 > 0) {
+        const extendRatio2 = this.extensionDistance / len2;
+        segments.push({
+          start: last.mapXy,
+          end: {
+            x: last.mapXy.x + dx2 * extendRatio2,
+            y: last.mapXy.y + dy2 * extendRatio2
+          },
+          startGPS: last.gps,
+          endGPS: {
+            latitude: last.gps.latitude + (last.gps.latitude - secondLast.gps.latitude) * extendRatio2,
+            longitude: last.gps.longitude + (last.gps.longitude - secondLast.gps.longitude) * extendRatio2,
+            altitude: last.gps.altitude
+          },
+          startIndex: points.length - 1,
+          endIndex: -1 // 延长段标记
+        });
+      }
+    }
+
+    return segments;
+  }
+
+  /**
+   * 路线拉直处理（使用直线拟合）
+   */
+  private straightenRoadPoints(road: Road): RoadPoint[] {
+    const points = road.points;
+    if (points.length < 3) {
+      return points;
+    }
+
+    // 使用最小二乘法拟合直线
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+    for (const pt of points) {
+      sumX += pt.mapXy.x;
+      sumY += pt.mapXy.y;
+      sumXY += pt.mapXy.x * pt.mapXy.y;
+      sumX2 += pt.mapXy.x * pt.mapXy.x;
+    }
+
+    const n = points.length;
+    const meanX = sumX / n;
+    const meanY = sumY / n;
+
+    // 计算直线方向
+    let dirX = 1, dirY = 0;
+    if (road.type === 'longitudinal') {
+      // 纵向道路：主要沿Y轴方向
+      dirX = 0;
+      dirY = 1;
+    } else {
+      // 横向道路：主要沿X轴方向
+      dirX = 1;
+      dirY = 0;
+    }
+
+    // 计算投影点（简化：直接投影到主轴）
+    const straightenedPoints: RoadPoint[] = points.map((pt, idx) => {
+      if (road.type === 'longitudinal') {
+        // 纵向：保持Y，X取平均
+        return {
+          ...pt,
+          mapXy: {
+            x: meanX,
+            y: pt.mapXy.y
+          }
+        };
+      } else {
+        // 横向：保持X，Y取平均
+        return {
+          ...pt,
+          mapXy: {
+            x: pt.mapXy.x,
+            y: meanY
+          }
+        };
+      }
+    });
+
+    return straightenedPoints;
+  }
+
+  /**
+   * 插值计算GPS坐标
+   */
+  private interpolateGPS(
+    mapPoint: MapPoint,
+    longSeg: { startGPS: GPSPoint; endGPS: GPSPoint; start: MapPoint; end: MapPoint },
+    horSeg: { startGPS: GPSPoint; endGPS: GPSPoint; start: MapPoint; end: MapPoint }
+  ): GPSPoint {
+    // 从纵向线段插值
+    const longT = this.calculateInterpolationFactor(mapPoint, longSeg.start, longSeg.end);
+    const longGPS = this.interpolateGPSPoint(longSeg.startGPS, longSeg.endGPS, longT);
+
+    // 从横向线段插值
+    const horT = this.calculateInterpolationFactor(mapPoint, horSeg.start, horSeg.end);
+    const horGPS = this.interpolateGPSPoint(horSeg.startGPS, horSeg.endGPS, horT);
+
+    // 取两者的平均值
+    return {
+      latitude: (longGPS.latitude + horGPS.latitude) / 2,
+      longitude: (longGPS.longitude + horGPS.longitude) / 2,
+      altitude: (longGPS.altitude + horGPS.altitude) / 2
+    };
+  }
+
+  /**
+   * 计算插值因子
+   */
+  private calculateInterpolationFactor(point: MapPoint, start: MapPoint, end: MapPoint): number {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const len2 = dx * dx + dy * dy;
+    
+    if (len2 < 1e-10) return 0;
+    
+    return ((point.x - start.x) * dx + (point.y - start.y) * dy) / len2;
+  }
+
+  /**
+   * 插值GPS点
+   */
+  private interpolateGPSPoint(start: GPSPoint, end: GPSPoint, t: number): GPSPoint {
+    return {
+      latitude: start.latitude + t * (end.latitude - start.latitude),
+      longitude: start.longitude + t * (end.longitude - start.longitude),
+      altitude: start.altitude + t * (end.altitude - start.altitude)
+    };
   }
 
   /**

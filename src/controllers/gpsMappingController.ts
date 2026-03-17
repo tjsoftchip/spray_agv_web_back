@@ -510,6 +510,10 @@ export const deleteRoad = async (req: Request, res: Response) => {
 /**
  * 生成交叉点
  * POST /api/gps-mapping/intersections/generate
+ * 
+ * V2改进：
+ * 1. 使用线段相交算法识别交叉点
+ * 2. 自动生成转弯路线
  */
 export const generateIntersections = async (req: Request, res: Response) => {
   try {
@@ -533,14 +537,27 @@ export const generateIntersections = async (req: Request, res: Response) => {
       });
     }
 
-    // 自动检测交叉点
+    // 自动检测交叉点（使用改进的算法）
     session.intersections = intersectionDetector.detectIntersections(session.roads);
+    
+    // 自动生成转弯路线
+    if (session.intersections.length > 0) {
+      session.turnPaths = turnPathGenerator.generateTurnPaths(
+        session.intersections,
+        session.roads
+      );
+      console.log(`[GPS建图] 已自动生成 ${session.turnPaths.length} 条转弯路线`);
+    }
+    
     session.lastUpdateTime = Date.now();
 
     res.json({
       success: true,
-      message: `已识别 ${session.intersections.length} 个交叉点`,
-      data: session.intersections
+      message: `已识别 ${session.intersections.length} 个交叉点，生成 ${session.turnPaths.length} 条转弯路线`,
+      data: {
+        intersections: session.intersections,
+        turnPaths: session.turnPaths
+      }
     });
   } catch (error) {
     console.error('生成交叉点失败:', error);
@@ -563,6 +580,25 @@ export const getIntersections = async (req: Request, res: Response) => {
   } catch (error) {
     console.error('获取交叉点失败:', error);
     res.status(500).json({ success: false, message: '获取交叉点失败' });
+  }
+};
+
+/**
+ * 获取所有转弯路线
+ * GET /api/gps-mapping/turn-paths
+ */
+export const getTurnPaths = async (req: Request, res: Response) => {
+  try {
+    const session = getOrCreateSession();
+
+    res.json({
+      success: true,
+      data: session.turnPaths,
+      count: session.turnPaths.length
+    });
+  } catch (error) {
+    console.error('获取转弯路线失败:', error);
+    res.status(500).json({ success: false, message: '获取转弯路线失败' });
   }
 };
 

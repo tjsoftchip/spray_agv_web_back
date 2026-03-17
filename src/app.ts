@@ -43,7 +43,7 @@ const io = new SocketIOServer(httpServer, {
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 1000,
+  max: 10000, // 提高到 10000，支持 GPS 建图等高频调用场景
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,

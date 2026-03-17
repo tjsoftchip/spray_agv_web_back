@@ -212,27 +212,25 @@ export const getSystemStatus = async (req: Request, res: Response) => {
     status.functionalNodes.navigation = await processExists('nav2');
     status.functionalNodes.supply = await processExists('supply_manager');
     
-    // 检查传感器 - 使用更精确的检测
-    const cameraCount = await new Promise<number>((resolve) => {
-      exec('pgrep -f "astra_camera_node" | wc -l', (error, stdout) => {
-        resolve(parseInt(stdout.trim()));
+    // 检查传感器 - 使用 ROS2 节点列表检测（更准确）
+    const ros2NodeList = await new Promise<string>((resolve) => {
+      exec('ros2 node list 2>/dev/null', (error, stdout) => {
+        resolve(error ? '' : stdout);
       });
     });
-    const lidarCount = await new Promise<number>((resolve) => {
-      exec('pgrep -f "ydlidar_ros2_driver" | wc -l', (error, stdout) => {
-        resolve(parseInt(stdout.trim()));
-      });
-    });
-    const webVideoCount = await new Promise<number>((resolve) => {
+    
+    const hasCameraNode = ros2NodeList.includes('camera') || ros2NodeList.includes('astra');
+    const hasLidarNode = ros2NodeList.includes('ydlidar') || ros2NodeList.includes('lidar');
+    const hasWebVideo = await new Promise<boolean>((resolve) => {
       exec('pgrep -f "web_video_server" | wc -l', (error, stdout) => {
-        resolve(parseInt(stdout.trim()));
+        resolve(!error && parseInt(stdout.trim()) > 0);
       });
     });
     
     // 设置传感器状态
-    status.functionalNodes.sensors.camera = cameraCount > 0;
-    status.functionalNodes.sensors.lidar = lidarCount > 0;
-    status.functionalNodes.sensors.webVideo = webVideoCount > 0;
+    status.functionalNodes.sensors.camera = hasCameraNode;
+    status.functionalNodes.sensors.lidar = hasLidarNode;
+    status.functionalNodes.sensors.webVideo = hasWebVideo;
 
     res.json(status);
   } catch (error) {

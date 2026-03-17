@@ -23,6 +23,9 @@ router.delete('/roads/:roadId', authenticate, (req, res) => gpsMappingController
 router.post('/intersections/generate', authenticate, (req, res) => gpsMappingController.generateIntersections(req, res));
 router.get('/intersections', authenticate, (req, res) => gpsMappingController.getIntersections(req, res));
 
+// 转弯路线（新增）
+router.get('/turn-paths', authenticate, (req, res) => gpsMappingController.getTurnPaths(req, res));
+
 // 梁位自动识别与标注
 router.post('/beam-positions/generate', authenticate, (req, res) => gpsMappingController.generateBeamPositions(req, res));
 router.get('/beam-positions', authenticate, (req, res) => gpsMappingController.getBeamPositions(req, res));

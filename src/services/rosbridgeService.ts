@@ -10,10 +10,11 @@ class RosbridgeService {
   public latestNavigationStatus: any = null;
 // 消息频率限制（毫秒）
   private messageThrottle = new Map<string, number>();
-  private throttleInterval = 100; // 100ms最小间隔
+  private throttleInterval = 200; // 200ms最小间隔（提升性能）
   
   // 特殊话题的频率限制
   private specialTopicIntervals: { [topic: string]: number } = {
+    '/scan': 500, // 激光雷达数据限制在500ms
     '/map': 500, // 地图消息限制在500ms
     '/amcl_pose': 50, // 机器人位姿消息限制在50ms
     '/robot_pose': 50,
@@ -35,14 +36,14 @@ class RosbridgeService {
     this.connectToRosbridge();
 
     this.io.on('connection', (socket) => {
-      console.log('Client connected:', socket.id);
+      // 已移除客户端连接日志以提升性能
 
       socket.on('ros_command', (data) => {
         this.sendToRos(data);
       });
 
       socket.on('disconnect', () => {
-        console.log('Client disconnected:', socket.id);
+        // 已移除断开连接日志以提升性能
       });
     });
   }
@@ -87,18 +88,7 @@ class RosbridgeService {
           // 使用特殊话题的频率限制
           const throttleInterval = this.specialTopicIntervals[topic] || this.throttleInterval;
 
-          // 只对特定话题打印调试信息（减少日志输出）
-          if (topic === '/tf' && message.msg && message.msg.transforms) {
-            console.log('TF transforms:', message.msg.transforms.length);
-          } else if (topic === '/map' && message.msg) {
-            console.log('Map info:', {
-              hasInfo: !!message.msg.info,
-              hasData: !!message.msg.data,
-              width: message.msg.info?.width,
-              height: message.msg.info?.height,
-              resolution: message.msg.info?.resolution
-            });
-          }
+          // 已移除高频消息的调试日志以提升性能
           
           if (now - lastSent >= throttleInterval) {
             this.broadcastToClients('ros_message', message);
@@ -141,7 +131,7 @@ class RosbridgeService {
                 const supplyManagementController = require('../controllers/supplyManagementController');
                 supplyManagementController.updateWaterLevelStatus(waterData);
                 this.broadcastToClients('water_level_status', waterData);
-                console.log('Water level updated:', waterData);
+                // 已移除水位更新日志以提升性能
               } catch (e) {
                 console.error('Parse water level error:', e);
               }

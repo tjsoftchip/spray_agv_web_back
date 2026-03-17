@@ -14,6 +14,13 @@ export interface MapPoint {
   y: number;
 }
 
+// 道路点
+export interface RoadPoint {
+  seq: number;
+  gps: GPSPoint;
+  mapXy: MapPoint;
+}
+
 // 道路数据
 export interface Road {
   id: string;
@@ -24,11 +31,7 @@ export interface Road {
     keepoutDistance: number;  // 禁区宽度 (m)
     channelWidth: number;     // 通道总宽度 (m)
   };
-  points: Array<{
-    seq: number;
-    gps: GPSPoint;
-    mapXy: MapPoint;
-  }>;
+  points: RoadPoint[];
 }
 
 // 交叉点数据
