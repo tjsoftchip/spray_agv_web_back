@@ -151,18 +151,13 @@ export const completeOriginCalibration = async (req: Request, res: Response) => 
     session.status = 'road_recording';
     session.lastUpdateTime = Date.now();
 
-    // 调用ROS2服务设置GPS原点
+    // 调用ROS2服务设置GPS原点（使用当前GPS位置）
     if (rosbridgeService.isConnected()) {
       try {
         await rosbridgeService.callService(
-          '/gps_to_map/set_origin',
-          'custom_interfaces/srv/SetGPSOrigin',
-          {
-            latitude,
-            longitude,
-            altitude,
-            rotation
-          }
+          '/gps_to_map/set_current_as_origin',
+          'std_srvs/srv/Trigger',
+          {}
         );
         console.log('[GPS建图] ROS2 GPS原点已设置');
       } catch (rosError) {
@@ -318,6 +313,11 @@ export const recordRoadPoint = async (req: Request, res: Response) => {
 
     road.points.push(newPoint);
     session.lastUpdateTime = Date.now();
+    
+    // 调试日志：显示坐标转换结果
+    if (road.points.length <= 3 || road.points.length % 10 === 0) {
+      console.log(`[GPS建图] 道路点 #${road.points.length}: GPS(${latitude.toFixed(7)}, ${longitude.toFixed(7)}) -> 地图坐标(${mapXy.x.toFixed(2)}m, ${mapXy.y.toFixed(2)}m)`);
+    }
 
     res.json({
       success: true,

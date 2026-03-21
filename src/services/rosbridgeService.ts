@@ -24,7 +24,11 @@ class RosbridgeService {
     '/navigation_task/status': 200, // 导航状态200ms
     '/obstacle_detection': 100, // 障碍物检测100ms
     '/camera/color/image_raw/compressed': 500, // 相机图像限制在500ms (2fps)
-    '/emergency_stop_status': 1000 // 紧急停止状态限制在1s
+    '/emergency_stop_status': 1000, // 紧急停止状态限制在1s
+    '/gps/fix': 100, // GPS定位数据100ms（10Hz）
+    '/gps/quality': 100, // GPS质量数据100ms
+    '/gps/status': 100, // GPS状态数据100ms
+    '/gps/heading': 100, // GPS航向数据100ms
   };
 
   constructor() {
@@ -67,15 +71,30 @@ class RosbridgeService {
             reliability: { type: 'reliable' } 
           } 
         });
-        // 订阅GPS状态话题
+        // 订阅GPS话题（使用BEST_EFFORT QoS匹配rtk_gps_node发布者）
+        this.subscribeTopic('/gps/fix', 'sensor_msgs/NavSatFix', { 
+          qos: { 
+            reliability: { type: 'best_effort' } 
+          } 
+        });
+        this.subscribeTopic('/gps/quality', 'std_msgs/Int8', { 
+          qos: { 
+            reliability: { type: 'best_effort' } 
+          } 
+        });
         this.subscribeTopic('/gps/status', 'std_msgs/String');
+        this.subscribeTopic('/gps/heading', 'std_msgs/Float64', { 
+          qos: { 
+            reliability: { type: 'best_effort' } 
+          } 
+        });
         // 使用RELIABLE QoS订阅电池话题
         this.subscribeTopic('/battery_level', 'std_msgs/Float32', { 
           qos: { 
             reliability: { type: 'reliable' } 
           } 
         });
-        console.log('Subscribed to navigation, obstacle detection, water level, GPS status and battery level topics');
+        console.log('Subscribed to navigation, obstacle detection, water level, GPS topics and battery level topics');
       });
 
       this.rosbridge.on('message', (data: WebSocket.Data) => {
@@ -93,6 +112,11 @@ class RosbridgeService {
           if (now - lastSent >= throttleInterval) {
             this.broadcastToClients('ros_message', message);
             this.messageThrottle.set(topic, now);
+            
+            // GPS数据调试日志（每10条打印一次）
+            if (topic.startsWith('/gps/') && now % 10 === 0) {
+              console.log(`[Rosbridge] ${topic}: received and broadcasted`);
+            }
             
             if (topic === '/navigation_task/status' && message.msg) {
               try {
