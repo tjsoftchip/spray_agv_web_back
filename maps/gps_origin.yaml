@@ -1,0 +1,11 @@
+# GPS原点配置
+origin:
+  map_origin:
+    x: 0.0
+    y: 0.0
+    theta: 0
+  gps_origin:
+    latitude: 39.041853925
+    longitude: 117.131472255
+    altitude: 3.2914
+  utm_zone: 50

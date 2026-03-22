@@ -2062,18 +2062,24 @@ export class MapFileGenerator {
   }
   
   /**
-   * 生成十字路口的4个转弯圆弧
+   * 生成转弯圆弧（V11版本）
+   * 
+   * 使用角平分线方法，确保圆弧与道路中心线正确相切：
+   * - L型路口（断头路相交）：1条圆弧，圆心在角平分线上
+   * - T型路口：2条圆弧，每条与支路和主干道都相切
+   * - 十字路口（双向道路相交）：4条圆弧
    * 
    * 几何规则：
-   * - 圆弧中心位于 (±4.5m, ±4.5m) 相对于路口中心
-   * - 半径 = 4.5m（阿克曼最小转弯半径）
-   * - 圆弧与垂直道路中心线相切
+   * - 圆弧半径 = 4.5m（阿克曼最小转弯半径）
+   * - 圆弧与道路中心线相切，切点距离路口R
+   * - 圆心角 = 道路夹角（约90度，不是180度）
    */
   generateTurnArcs(
     intersection: Intersection,
     roads: Road[],
     turnRadius: number = 4.5,
-    pointSpacing: number = 0.2
+    pointSpacing: number = 0.2,
+    allIntersections?: Intersection[]
   ): TurnArc[] {
     const arcs: TurnArc[] = [];
     const cx = intersection.center.mapXy.x;
@@ -2087,8 +2093,414 @@ export class MapFileGenerator {
     }
     
     const [road1, road2] = connectedRoads;
+    const R = turnRadius;
     
-    // 获取道路方向
+    // 分析道路的通行方向和断头路情况
+    const info1 = this.analyzeRoadDeadEndV11(road1, intersection);
+    const info2 = this.analyzeRoadDeadEndV11(road2, intersection);
+    
+    // 判断路口类型
+    const isL = info1.isDeadEnd && info2.isDeadEnd;
+    const isT = (info1.isDeadEnd && !info2.isDeadEnd) || (!info1.isDeadEnd && info2.isDeadEnd);
+    const isCross = !info1.isDeadEnd && !info2.isDeadEnd;
+    
+    if (isL) {
+      // L型路口：使用角平分线方法生成1条圆弧
+      const arc = this.createLTypeTurnArcV11(
+        intersection, road1, road2, info1, info2, R, pointSpacing
+      );
+      if (arc) arcs.push(arc);
+    } else if (isT) {
+      // T型路口：生成2条圆弧
+      const tArcs = this.createTTypeTurnArcsV11(
+        intersection, road1, road2, info1, info2, R, pointSpacing
+      );
+      arcs.push(...tArcs);
+    } else if (isCross) {
+      // 十字路口：生成4条圆弧
+      const crossArcs = this.createCrossTurnArcsV11(
+        intersection, road1, road2, info1, info2, R, pointSpacing
+      );
+      arcs.push(...crossArcs);
+    }
+    
+    return arcs;
+  }
+  
+  /**
+   * V11版本：分析道路在路口处是否为断头路端
+   * 返回道路的有效方向和是否为断头路
+   */
+  private analyzeRoadDeadEndV11(
+    road: Road,
+    intersection: Intersection
+  ): { isDeadEnd: boolean; validDir: { x: number; y: number } } {
+    if (road.points.length < 2) {
+      return { isDeadEnd: false, validDir: { x: 1, y: 0 } };
+    }
+    
+    const cx = intersection.center.mapXy.x;
+    const cy = intersection.center.mapXy.y;
+    
+    const start = road.points[0].mapXy;
+    const end = road.points[road.points.length - 1].mapXy;
+    
+    // 计算道路两端到路口的距离
+    const distStart = Math.sqrt(Math.pow(start.x - cx, 2) + Math.pow(start.y - cy, 2));
+    const distEnd = Math.sqrt(Math.pow(end.x - cx, 2) + Math.pow(end.y - cy, 2));
+    
+    const DEAD_END_THRESHOLD = 10;
+    const isStartDead = distStart < DEAD_END_THRESHOLD;
+    const isEndDead = distEnd < DEAD_END_THRESHOLD;
+    
+    // 确定有效方向（从路口指向道路的另一端）
+    let validDir: { x: number; y: number };
+    
+    if (isStartDead && !isEndDead) {
+      // 起点在路口，有效方向指向终点
+      validDir = { x: end.x - cx, y: end.y - cy };
+    } else if (isEndDead && !isStartDead) {
+      // 终点在路口，有效方向指向起点
+      validDir = { x: start.x - cx, y: start.y - cy };
+    } else {
+      // 双向道路，默认方向
+      validDir = { x: end.x - start.x, y: end.y - start.y };
+    }
+    
+    // 归一化
+    const norm = Math.sqrt(validDir.x * validDir.x + validDir.y * validDir.y);
+    if (norm > 0.01) {
+      validDir = { x: validDir.x / norm, y: validDir.y / norm };
+    }
+    
+    return {
+      isDeadEnd: isStartDead || isEndDead,
+      validDir
+    };
+  }
+  
+  /**
+   * V11版本：为L型路口创建单条转弯圆弧
+   * 使用角平分线方法，确保圆弧与两条道路中心线相切
+   */
+  private createLTypeTurnArcV11(
+    intersection: Intersection,
+    road1: Road,
+    road2: Road,
+    info1: { isDeadEnd: boolean; validDir: { x: number; y: number } },
+    info2: { isDeadEnd: boolean; validDir: { x: number; y: number } },
+    R: number,
+    pointSpacing: number
+  ): TurnArc | null {
+    const cx = intersection.center.mapXy.x;
+    const cy = intersection.center.mapXy.y;
+    
+    const dir1 = info1.validDir;
+    const dir2 = info2.validDir;
+    
+    // 计算两条道路方向的夹角
+    const dot = dir1.x * dir2.x + dir1.y * dir2.y;
+    const theta = Math.acos(Math.max(-1, Math.min(1, dot)));
+    
+    // 角平分线方向
+    const bisector = {
+      x: (dir1.x + dir2.x) / 2,
+      y: (dir1.y + dir2.y) / 2
+    };
+    const norm = Math.sqrt(bisector.x * bisector.x + bisector.y * bisector.y);
+    if (norm > 0.01) {
+      bisector.x /= norm;
+      bisector.y /= norm;
+    }
+    
+    // 圆心到路口中心的距离 = R / sin(theta/2)
+    const sinHalf = Math.sin(theta / 2);
+    const dist = sinHalf > 0.01 ? R / sinHalf : R * 2;
+    
+    // 圆心位置
+    const arcCx = cx + dist * bisector.x;
+    const arcCy = cy + dist * bisector.y;
+    
+    // 切点位置：在道路中心线上，距离路口R
+    const tangent1 = { x: cx + R * dir1.x, y: cy + R * dir1.y };
+    const tangent2 = { x: cx + R * dir2.x, y: cy + R * dir2.y };
+    
+    return this.buildTurnArc(
+      intersection, arcCx, arcCy, R, tangent1, tangent2, pointSpacing, 0
+    );
+  }
+  
+  /**
+   * V11版本：为T型路口创建两条转弯圆弧
+   * 每条圆弧与支路和主干道都相切
+   */
+  private createTTypeTurnArcsV11(
+    intersection: Intersection,
+    road1: Road,
+    road2: Road,
+    info1: { isDeadEnd: boolean; validDir: { x: number; y: number } },
+    info2: { isDeadEnd: boolean; validDir: { x: number; y: number } },
+    R: number,
+    pointSpacing: number
+  ): TurnArc[] {
+    const arcs: TurnArc[] = [];
+    const cx = intersection.center.mapXy.x;
+    const cy = intersection.center.mapXy.y;
+    
+    // 区分支路（断头路）和主干道（双向）
+    let branchDir: { x: number; y: number };
+    let mainDir: { x: number; y: number };
+    
+    if (info1.isDeadEnd) {
+      branchDir = info1.validDir;
+      mainDir = info2.validDir;
+    } else {
+      branchDir = info2.validDir;
+      mainDir = info1.validDir;
+    }
+    
+    // 主干道的两个方向
+    const mainDirPos = mainDir;
+    const mainDirNeg = { x: -mainDir.x, y: -mainDir.y };
+    
+    // 切点在支路方向上
+    const tangentBranch = { x: cx + R * branchDir.x, y: cy + R * branchDir.y };
+    
+    // 左侧圆弧：连接支路和主干道正方向
+    const tangentMainLeft = { x: cx + R * mainDirPos.x, y: cy + R * mainDirPos.y };
+    
+    // 计算左侧圆弧的角平分线和圆心
+    const bisectorLeft = {
+      x: (branchDir.x + mainDirPos.x) / 2,
+      y: (branchDir.y + mainDirPos.y) / 2
+    };
+    const normLeft = Math.sqrt(bisectorLeft.x * bisectorLeft.x + bisectorLeft.y * bisectorLeft.y);
+    if (normLeft > 0.01) {
+      bisectorLeft.x /= normLeft;
+      bisectorLeft.y /= normLeft;
+    }
+    
+    const dotLeft = branchDir.x * mainDirPos.x + branchDir.y * mainDirPos.y;
+    const thetaLeft = Math.acos(Math.max(-1, Math.min(1, dotLeft)));
+    const sinHalfLeft = Math.sin(thetaLeft / 2);
+    const distLeft = sinHalfLeft > 0.01 ? R / sinHalfLeft : R * 2;
+    
+    const arc1Cx = cx + distLeft * bisectorLeft.x;
+    const arc1Cy = cy + distLeft * bisectorLeft.y;
+    
+    const arc1 = this.buildTurnArc(
+      intersection, arc1Cx, arc1Cy, R, tangentBranch, tangentMainLeft, pointSpacing, 0
+    );
+    if (arc1) arcs.push(arc1);
+    
+    // 右侧圆弧：连接支路和主干道反方向
+    const tangentMainRight = { x: cx + R * mainDirNeg.x, y: cy + R * mainDirNeg.y };
+    
+    // 计算右侧圆弧的角平分线和圆心
+    const bisectorRight = {
+      x: (branchDir.x + mainDirNeg.x) / 2,
+      y: (branchDir.y + mainDirNeg.y) / 2
+    };
+    const normRight = Math.sqrt(bisectorRight.x * bisectorRight.x + bisectorRight.y * bisectorRight.y);
+    if (normRight > 0.01) {
+      bisectorRight.x /= normRight;
+      bisectorRight.y /= normRight;
+    }
+    
+    const dotRight = branchDir.x * mainDirNeg.x + branchDir.y * mainDirNeg.y;
+    const thetaRight = Math.acos(Math.max(-1, Math.min(1, dotRight)));
+    const sinHalfRight = Math.sin(thetaRight / 2);
+    const distRight = sinHalfRight > 0.01 ? R / sinHalfRight : R * 2;
+    
+    const arc2Cx = cx + distRight * bisectorRight.x;
+    const arc2Cy = cy + distRight * bisectorRight.y;
+    
+    const arc2 = this.buildTurnArc(
+      intersection, arc2Cx, arc2Cy, R, tangentBranch, tangentMainRight, pointSpacing, 1
+    );
+    if (arc2) arcs.push(arc2);
+    
+    return arcs;
+  }
+  
+  /**
+   * V11版本：为十字路口创建四条转弯圆弧
+   */
+  private createCrossTurnArcsV11(
+    intersection: Intersection,
+    road1: Road,
+    road2: Road,
+    info1: { isDeadEnd: boolean; validDir: { x: number; y: number } },
+    info2: { isDeadEnd: boolean; validDir: { x: number; y: number } },
+    R: number,
+    pointSpacing: number
+  ): TurnArc[] {
+    const arcs: TurnArc[] = [];
+    const cx = intersection.center.mapXy.x;
+    const cy = intersection.center.mapXy.y;
+    
+    const dir1 = info1.validDir;
+    const dir2 = info2.validDir;
+    
+    // 垂直方向
+    const perp1 = { x: -dir1.y, y: dir1.x };
+    const perp2 = { x: -dir2.y, y: dir2.x };
+    
+    // 四个象限
+    const quadrants = [
+      { signX: 1, signY: 1 },
+      { signX: 1, signY: -1 },
+      { signX: -1, signY: 1 },
+      { signX: -1, signY: -1 }
+    ];
+    
+    for (let i = 0; i < quadrants.length; i++) {
+      const q = quadrants[i];
+      
+      // 圆心位置
+      const arcCx = cx + q.signX * R * perp1.x + q.signY * R * perp2.x;
+      const arcCy = cy + q.signX * R * perp1.y + q.signY * R * perp2.y;
+      
+      // 切点位置
+      const tangent1 = {
+        x: cx + q.signY * R * perp2.x,
+        y: cy + q.signY * R * perp2.y
+      };
+      const tangent2 = {
+        x: cx + q.signX * R * perp1.x,
+        y: cy + q.signX * R * perp1.y
+      };
+      
+      const arc = this.buildTurnArc(
+        intersection, arcCx, arcCy, R, tangent1, tangent2, pointSpacing, i
+      );
+      if (arc) arcs.push(arc);
+    }
+    
+    return arcs;
+  }
+  
+  /**
+   * 构建转弯圆弧对象
+   */
+  private buildTurnArc(
+    intersection: Intersection,
+    arcCx: number,
+    arcCy: number,
+    R: number,
+    tangent1: { x: number; y: number },
+    tangent2: { x: number; y: number },
+    pointSpacing: number,
+    quadrantIndex: number
+  ): TurnArc | null {
+    // 计算起始和结束角度
+    let startAngle = Math.atan2(tangent1.y - arcCy, tangent1.x - arcCx);
+    let endAngle = Math.atan2(tangent2.y - arcCy, tangent2.x - arcCx);
+    
+    // 计算角度差，确保走短弧（小于180度）
+    let angleDiff = endAngle - startAngle;
+    
+    // 标准化到 [-π, π] 范围
+    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+    
+    // 设置endAngle使角度差为短弧
+    endAngle = startAngle + angleDiff;
+    
+    // 计算弧长和点数
+    const arcLength = R * Math.abs(angleDiff);
+    const numPoints = Math.max(11, Math.ceil(arcLength / pointSpacing) + 1);
+    
+    // 生成圆弧点
+    const arcPoints: TurnArcPoint[] = [];
+    for (let i = 0; i < numPoints; i++) {
+      const t = i / (numPoints - 1);
+      const angle = startAngle + t * (endAngle - startAngle);
+      
+      const px = arcCx + R * Math.cos(angle);
+      const py = arcCy + R * Math.sin(angle);
+      
+      // 简化的GPS计算
+      const lat = intersection.center.gps.latitude + py / 111000;
+      const lon = intersection.center.gps.longitude + px / (111000 * Math.cos(intersection.center.gps.latitude * Math.PI / 180));
+      
+      arcPoints.push({
+        seq: i,
+        gps: { latitude: lat, longitude: lon, altitude: intersection.center.gps.altitude },
+        mapXy: { x: px, y: py }
+      });
+    }
+    
+    return {
+      id: `arc_${intersection.id}_${quadrantIndex}`,
+      intersectionId: intersection.id,
+      quadrant: quadrantIndex,
+      radius: R,
+      center: { x: arcCx, y: arcCy },
+      tangentPoints: [tangent1, tangent2],
+      points: arcPoints
+    };
+  }
+  
+  /**
+   * 为L型路口创建单条转弯圆弧（旧版本，保留兼容）
+   * 圆弧位置根据路口相对于整体布局的位置确定，确保圆弧在路口内侧
+   */
+  private createLTypeTurnArc(
+    intersection: Intersection,
+    allIntersections: Intersection[],
+    roads: Road[],
+    turnRadius: number,
+    pointSpacing: number
+  ): TurnArc | null {
+    const cx = intersection.center.mapXy.x;
+    const cy = intersection.center.mapXy.y;
+    
+    // 计算所有路口的中心点（用于确定整体布局）
+    let avgCx = 0, avgCy = 0;
+    for (const inter of allIntersections) {
+      avgCx += inter.center.mapXy.x;
+      avgCy += inter.center.mapXy.y;
+    }
+    avgCx /= allIntersections.length;
+    avgCy /= allIntersections.length;
+    
+    // 确定当前路口相对于中心的位置
+    const relX = cx - avgCx;
+    const relY = cy - avgCy;
+    
+    // 根据位置确定目标象限（圆弧应该在路口内侧）
+    // 左上角 → 第4象限（右下方向）
+    // 右上角 → 第3象限（左下方向）
+    // 右下角 → 第2象限（左上方向）
+    // 左下角 → 第1象限（右上方向）
+    let targetOffset: { x: number; y: number };
+    
+    if (relX < 0 && relY < 0) {
+      // 左上角
+      targetOffset = { x: 1, y: 1 };
+    } else if (relX > 0 && relY < 0) {
+      // 右上角
+      targetOffset = { x: -1, y: 1 };
+    } else if (relX > 0 && relY > 0) {
+      // 右下角
+      targetOffset = { x: -1, y: -1 };
+    } else {
+      // 左下角
+      targetOffset = { x: 1, y: -1 };
+    }
+    
+    // 获取连接的道路
+    const connectedRoads = roads.filter(r => intersection.connectedRoads.includes(r.id));
+    if (connectedRoads.length !== 2) return null;
+    
+    const [road1, road2] = connectedRoads;
+    
+    // 分析道路的有效端方向
+    const info1 = this.analyzeRoadDeadEnd(road1, intersection);
+    const info2 = this.analyzeRoadDeadEnd(road2, intersection);
+    
+    // 获取道路方向向量
     const dir1 = this.getRoadDirectionVector(road1);
     const dir2 = this.getRoadDirectionVector(road2);
     
@@ -2096,89 +2508,412 @@ export class MapFileGenerator {
     const perp1 = { x: -dir1.y, y: dir1.x };
     const perp2 = { x: -dir2.y, y: dir2.x };
     
-    // 生成4个象限的圆弧
-    const quadrants = [
-      { signX: 1, signY: 1 },   // 第一象限
-      { signX: 1, signY: -1 },  // 第四象限
-      { signX: -1, signY: 1 },  // 第二象限
-      { signX: -1, signY: -1 }  // 第三象限
+    // 确定每条道路有效端的垂直方向
+    const road1ValidPerp = info1.isStartDeadEnd ? perp1 : { x: -perp1.x, y: -perp1.y };
+    const road2ValidPerp = info2.isStartDeadEnd ? perp2 : { x: -perp2.x, y: -perp2.y };
+    
+    // 计算4个候选圆弧中心位置
+    const R = turnRadius;
+    const candidates = [
+      { ox: R * road1ValidPerp.x + R * road2ValidPerp.x, oy: R * road1ValidPerp.y + R * road2ValidPerp.y, idx: 0 },
+      { ox: R * road1ValidPerp.x - R * road2ValidPerp.x, oy: R * road1ValidPerp.y - R * road2ValidPerp.y, idx: 1 },
+      { ox: -R * road1ValidPerp.x + R * road2ValidPerp.x, oy: -R * road1ValidPerp.y + R * road2ValidPerp.y, idx: 2 },
+      { ox: -R * road1ValidPerp.x - R * road2ValidPerp.x, oy: -R * road1ValidPerp.y - R * road2ValidPerp.y, idx: 3 }
     ];
     
-    const R = turnRadius;
+    // 选择最接近目标方向的候选
+    let bestIdx = 0;
+    let bestScore = -Infinity;
     
-    for (let idx = 0; idx < quadrants.length; idx++) {
-      const q = quadrants[idx];
-      const sx = q.signX;
-      const sy = q.signY;
+    for (const cand of candidates) {
+      const norm = Math.sqrt(cand.ox * cand.ox + cand.oy * cand.oy);
+      if (norm < 0.1) continue;
       
-      // 圆弧中心位置
-      const arcCx = cx + sx * R * perp1.x + sy * R * perp2.x;
-      const arcCy = cy + sx * R * perp1.y + sy * R * perp2.y;
+      const oxNorm = cand.ox / norm;
+      const oyNorm = cand.oy / norm;
       
-      // 切点位置
-      const tangent1X = cx + sy * R * perp2.x;
-      const tangent1Y = cy + sy * R * perp2.y;
+      const targetNorm = Math.sqrt(targetOffset.x * targetOffset.x + targetOffset.y * targetOffset.y);
+      const txNorm = targetOffset.x / targetNorm;
+      const tyNorm = targetOffset.y / targetNorm;
       
-      const tangent2X = cx + sx * R * perp1.x;
-      const tangent2Y = cy + sx * R * perp1.y;
+      // 点积越大越接近目标方向
+      const score = oxNorm * txNorm + oyNorm * tyNorm;
       
-      // 验证半径
-      const r1 = Math.sqrt((tangent1X - arcCx) ** 2 + (tangent1Y - arcCy) ** 2);
-      const r2 = Math.sqrt((tangent2X - arcCx) ** 2 + (tangent2Y - arcCy) ** 2);
-      
-      // 计算起始和结束角度
-      let startAngle = Math.atan2(tangent1Y - arcCy, tangent1X - arcCx);
-      let endAngle = Math.atan2(tangent2Y - arcCy, tangent2X - arcCx);
-      
-      // 计算角度差，确保走短弧（小于180度）
-      let angleDiff = endAngle - startAngle;
-      
-      // 标准化到 [-π, π] 范围
-      while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-      while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
-      
-      // 设置endAngle使角度差为短弧
-      endAngle = startAngle + angleDiff;
-      
-      // 计算弧长和点数
-      const arcLength = R * Math.abs(angleDiff);
-      const numPoints = Math.max(11, Math.ceil(arcLength / pointSpacing) + 1);
-      
-      // 生成圆弧点
-      const arcPoints: TurnArcPoint[] = [];
-      for (let i = 0; i < numPoints; i++) {
-        const t = i / (numPoints - 1);
-        const angle = startAngle + t * (endAngle - startAngle);
-        
-        const px = arcCx + R * Math.cos(angle);
-        const py = arcCy + R * Math.sin(angle);
-        
-        // 简化的GPS计算
-        const lat = intersection.center.gps.latitude + py / 111000;
-        const lon = intersection.center.gps.longitude + px / (111000 * Math.cos(intersection.center.gps.latitude * Math.PI / 180));
-        
-        arcPoints.push({
-          seq: i,
-          gps: { latitude: lat, longitude: lon, altitude: intersection.center.gps.altitude },
-          mapXy: { x: px, y: py }
-        });
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = cand.idx;
       }
+    }
+    
+    // 使用最佳候选创建圆弧
+    const best = candidates[bestIdx];
+    
+    // 根据选择的候选确定符号
+    let signX: number, signY: number;
+    if (bestIdx === 0) {
+      signX = 1; signY = 1;
+    } else if (bestIdx === 1) {
+      signX = 1; signY = -1;
+    } else if (bestIdx === 2) {
+      signX = -1; signY = 1;
+    } else {
+      signX = -1; signY = -1;
+    }
+    
+    return this.createSingleTurnArcV3(
+      intersection, cx, cy, signX, signY, R, road1ValidPerp, road2ValidPerp, pointSpacing
+    );
+  }
+  
+  /**
+   * 分析道路在路口处是否为断头路端
+   */
+  private analyzeRoadDeadEnd(
+    road: Road,
+    intersection: Intersection
+  ): { isStartDeadEnd: boolean; isEndDeadEnd: boolean } {
+    if (road.points.length < 2) {
+      return { isStartDeadEnd: false, isEndDeadEnd: false };
+    }
+    
+    // 找到交叉点在道路上的最近点索引
+    let nearestIdx = 0;
+    let minDist = Infinity;
+    
+    for (let i = 0; i < road.points.length; i++) {
+      const pt = road.points[i];
+      const dist = Math.sqrt(
+        Math.pow(pt.mapXy.x - intersection.center.mapXy.x, 2) +
+        Math.pow(pt.mapXy.y - intersection.center.mapXy.y, 2)
+      );
+      if (dist < minDist) {
+        minDist = dist;
+        nearestIdx = i;
+      }
+    }
+    
+    const avgPointSpacing = 0.5;
+    const distFromStart = nearestIdx * avgPointSpacing;
+    const distFromEnd = (road.points.length - 1 - nearestIdx) * avgPointSpacing;
+    
+    const DEAD_END_THRESHOLD = 10;
+    
+    return {
+      isStartDeadEnd: distFromStart < DEAD_END_THRESHOLD,
+      isEndDeadEnd: distFromEnd < DEAD_END_THRESHOLD
+    };
+  }
+  
+  /**
+   * 创建单条转弯圆弧（V3版本，使用有效端垂直向量）
+   */
+  private createSingleTurnArcV3(
+    intersection: Intersection,
+    cx: number, cy: number,
+    sx: number, sy: number,
+    R: number,
+    validPerp1: { x: number, y: number },
+    validPerp2: { x: number, y: number },
+    pointSpacing: number
+  ): TurnArc | null {
+    // 圆弧中心位置
+    const arcCx = cx + sx * R * validPerp1.x + sy * R * validPerp2.x;
+    const arcCy = cy + sx * R * validPerp1.y + sy * R * validPerp2.y;
+    
+    // 切点位置
+    const tangent1X = cx + sy * R * validPerp2.x;
+    const tangent1Y = cy + sy * R * validPerp2.y;
+    
+    const tangent2X = cx + sx * R * validPerp1.x;
+    const tangent2Y = cy + sx * R * validPerp1.y;
+    
+    // 计算起始和结束角度
+    let startAngle = Math.atan2(tangent1Y - arcCy, tangent1X - arcCx);
+    let endAngle = Math.atan2(tangent2Y - arcCy, tangent2X - arcCx);
+    
+    // 计算角度差，确保走短弧（小于180度）
+    let angleDiff = endAngle - startAngle;
+    
+    // 标准化到 [-π, π] 范围
+    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+    
+    // 设置endAngle使角度差为短弧
+    endAngle = startAngle + angleDiff;
+    
+    // 计算弧长和点数
+    const arcLength = R * Math.abs(angleDiff);
+    const numPoints = Math.max(11, Math.ceil(arcLength / pointSpacing) + 1);
+    
+    // 生成圆弧点
+    const arcPoints: TurnArcPoint[] = [];
+    for (let i = 0; i < numPoints; i++) {
+      const t = i / (numPoints - 1);
+      const angle = startAngle + t * (endAngle - startAngle);
       
-      arcs.push({
-        id: `arc_${intersection.id}_${idx}`,
-        intersectionId: intersection.id,
-        quadrant: idx,
-        radius: R,
-        center: { x: arcCx, y: arcCy },
-        tangentPoints: [
-          { x: tangent1X, y: tangent1Y },
-          { x: tangent2X, y: tangent2Y }
-        ],
-        points: arcPoints
+      const px = arcCx + R * Math.cos(angle);
+      const py = arcCy + R * Math.sin(angle);
+      
+      // 简化的GPS计算
+      const lat = intersection.center.gps.latitude + py / 111000;
+      const lon = intersection.center.gps.longitude + px / (111000 * Math.cos(intersection.center.gps.latitude * Math.PI / 180));
+      
+      arcPoints.push({
+        seq: i,
+        gps: { latitude: lat, longitude: lon, altitude: intersection.center.gps.altitude },
+        mapXy: { x: px, y: py }
       });
     }
     
-    return arcs;
+    return {
+      id: `arc_${intersection.id}_0`,
+      intersectionId: intersection.id,
+      quadrant: 0,
+      radius: R,
+      center: { x: arcCx, y: arcCy },
+      tangentPoints: [
+        { x: tangent1X, y: tangent1Y },
+        { x: tangent2X, y: tangent2Y }
+      ],
+      points: arcPoints
+    };
+  }
+  
+  /**
+   * 创建单条转弯圆弧
+   */
+  private createSingleTurnArc(
+    intersection: Intersection,
+    quadrantIndex: number,
+    cx: number, cy: number,
+    sx: number, sy: number,
+    R: number,
+    perp1: { x: number, y: number },
+    perp2: { x: number, y: number },
+    pointSpacing: number
+  ): TurnArc | null {
+    // 圆弧中心位置
+    const arcCx = cx + sx * R * perp1.x + sy * R * perp2.x;
+    const arcCy = cy + sx * R * perp1.y + sy * R * perp2.y;
+    
+    // 切点位置
+    const tangent1X = cx + sy * R * perp2.x;
+    const tangent1Y = cy + sy * R * perp2.y;
+    
+    const tangent2X = cx + sx * R * perp1.x;
+    const tangent2Y = cy + sx * R * perp1.y;
+    
+    // 计算起始和结束角度
+    let startAngle = Math.atan2(tangent1Y - arcCy, tangent1X - arcCx);
+    let endAngle = Math.atan2(tangent2Y - arcCy, tangent2X - arcCx);
+    
+    // 计算角度差，确保走短弧（小于180度）
+    let angleDiff = endAngle - startAngle;
+    
+    // 标准化到 [-π, π] 范围
+    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+    
+    // 设置endAngle使角度差为短弧
+    endAngle = startAngle + angleDiff;
+    
+    // 计算弧长和点数
+    const arcLength = R * Math.abs(angleDiff);
+    const numPoints = Math.max(11, Math.ceil(arcLength / pointSpacing) + 1);
+    
+    // 生成圆弧点
+    const arcPoints: TurnArcPoint[] = [];
+    for (let i = 0; i < numPoints; i++) {
+      const t = i / (numPoints - 1);
+      const angle = startAngle + t * (endAngle - startAngle);
+      
+      const px = arcCx + R * Math.cos(angle);
+      const py = arcCy + R * Math.sin(angle);
+      
+      // 简化的GPS计算
+      const lat = intersection.center.gps.latitude + py / 111000;
+      const lon = intersection.center.gps.longitude + px / (111000 * Math.cos(intersection.center.gps.latitude * Math.PI / 180));
+      
+      arcPoints.push({
+        seq: i,
+        gps: { latitude: lat, longitude: lon, altitude: intersection.center.gps.altitude },
+        mapXy: { x: px, y: py }
+      });
+    }
+    
+    return {
+      id: `arc_${intersection.id}_${quadrantIndex}`,
+      intersectionId: intersection.id,
+      quadrant: quadrantIndex,
+      radius: R,
+      center: { x: arcCx, y: arcCy },
+      tangentPoints: [
+        { x: tangent1X, y: tangent1Y },
+        { x: tangent2X, y: tangent2Y }
+      ],
+      points: arcPoints
+    };
+  }
+  
+  /**
+   * 分析道路在路口处的通行方向
+   * 返回该道路在该路口可通行的方向列表
+   */
+  private analyzeRoadDirectionsForArc(
+    road: Road,
+    intersection: Intersection
+  ): { angle: number; isForward: boolean }[] {
+    const directions: { angle: number; isForward: boolean }[] = [];
+    
+    if (road.points.length < 2) return directions;
+
+    // 找到交叉点在道路上的最近点索引
+    let nearestIdx = 0;
+    let minDist = Infinity;
+    
+    for (let i = 0; i < road.points.length; i++) {
+      const pt = road.points[i];
+      const dist = Math.sqrt(
+        Math.pow(pt.mapXy.x - intersection.center.mapXy.x, 2) +
+        Math.pow(pt.mapXy.y - intersection.center.mapXy.y, 2)
+      );
+      if (dist < minDist) {
+        minDist = dist;
+        nearestIdx = i;
+      }
+    }
+
+    // 判断交叉点是否在道路端点附近（10m范围内认为是断头路）
+    const avgPointSpacing = 0.5; // 平均点间距估算
+    const distFromStart = nearestIdx * avgPointSpacing;
+    const distFromEnd = (road.points.length - 1 - nearestIdx) * avgPointSpacing;
+    
+    const DEAD_END_THRESHOLD = 10; // 10m以内认为是断头路
+    
+    const isAtStart = distFromStart < DEAD_END_THRESHOLD;
+    const isAtEnd = distFromEnd < DEAD_END_THRESHOLD;
+
+    // 计算道路方向角度
+    const roadAngle = this.calculateRoadAngleAtPoint(road, nearestIdx);
+
+    // 如果交叉点不在起点附近，则可以正向通行
+    if (!isAtStart) {
+      directions.push({
+        angle: roadAngle,
+        isForward: true
+      });
+    }
+
+    // 如果交叉点不在终点附近，则可以反向通行
+    if (!isAtEnd) {
+      directions.push({
+        angle: roadAngle + Math.PI,
+        isForward: false
+      });
+    }
+
+    return directions;
+  }
+  
+  /**
+   * 计算道路在某点的方向角度
+   */
+  private calculateRoadAngleAtPoint(road: Road, pointIndex: number): number {
+    const points = road.points;
+    
+    // 使用前后点计算方向
+    const prevIdx = Math.max(0, pointIndex - 3);
+    const nextIdx = Math.min(points.length - 1, pointIndex + 3);
+    
+    if (prevIdx >= nextIdx) return 0;
+    
+    const dx = points[nextIdx].mapXy.x - points[prevIdx].mapXy.x;
+    const dy = points[nextIdx].mapXy.y - points[prevIdx].mapXy.y;
+    
+    return Math.atan2(dy, dx);
+  }
+  
+  /**
+   * 根据通行方向确定有效的转弯圆弧
+   * L型路口（每条道路只有一个离开方向）：只生成1条圆弧
+   * T型路口：生成2条圆弧
+   * 十字路口：生成4条圆弧（在调用方处理）
+   */
+  private determineValidArcs(
+    dirs1: { angle: number; isForward: boolean }[],
+    dirs2: { angle: number; isForward: boolean }[],
+    perp1: { x: number, y: number },
+    perp2: { x: number, y: number },
+    R: number
+  ): { signX: number; signY: number }[] {
+    const validArcs: { signX: number; signY: number }[] = [];
+    
+    const totalDirections = dirs1.length + dirs2.length;
+    
+    // L型路口：每条道路只有一个离开方向，只生成1条圆弧
+    if (totalDirections === 2 && dirs1.length === 1 && dirs2.length === 1) {
+      const d1 = dirs1[0];
+      const d2 = dirs2[0];
+      
+      // 计算转弯方向
+      const angleDiff = this.normalizeAngle(d2.angle - d1.angle);
+      
+      // 确定圆弧中心位置符号
+      // 根据离开方向类型确定
+      const sx1 = d1.isForward ? 1 : -1;
+      const sy1 = d2.isForward ? 1 : -1;
+      
+      // 根据转弯方向（左转/右转）确定最终符号
+      const isLeftTurn = angleDiff > 0;
+      
+      if (isLeftTurn) {
+        validArcs.push({ signX: sx1, signY: sy1 });
+      } else {
+        validArcs.push({ signX: -sx1, signY: -sy1 });
+      }
+      
+      return validArcs;
+    }
+    
+    // T型路口或其他情况：计算所有可能的转弯组合
+    for (const d1 of dirs1) {
+      for (const d2 of dirs2) {
+        const angleDiff = this.normalizeAngle(d2.angle - d1.angle);
+        
+        // 只考虑左转或右转（不是直行或掉头）
+        if (Math.abs(angleDiff) > 0.3 && Math.abs(Math.abs(angleDiff) - Math.PI) > 0.3) {
+          const isLeftTurn = angleDiff > 0;
+          
+          // 根据离开方向确定圆弧位置
+          const sx1 = d1.isForward ? 1 : -1;
+          const sy1 = d2.isForward ? 1 : -1;
+          
+          const signX = isLeftTurn ? sx1 : -sx1;
+          const signY = isLeftTurn ? sy1 : -sy1;
+          
+          const exists = validArcs.some(v => v.signX === signX && v.signY === signY);
+          if (!exists) {
+            validArcs.push({ signX, signY });
+          }
+        }
+      }
+    }
+    
+    // 如果没有找到有效圆弧，使用默认方向
+    if (validArcs.length === 0) {
+      validArcs.push({ signX: 1, signY: 1 });
+    }
+    
+    return validArcs;
+  }
+  
+  /**
+   * 标准化角度到 [-π, π] 范围
+   */
+  private normalizeAngle(angle: number): number {
+    while (angle > Math.PI) angle -= 2 * Math.PI;
+    while (angle < -Math.PI) angle += 2 * Math.PI;
+    return angle;
   }
   
   /**

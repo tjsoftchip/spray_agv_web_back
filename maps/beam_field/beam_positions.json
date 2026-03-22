@@ -1,0 +1,49 @@
+{
+  "version": "1.0",
+  "positions": [
+    {
+      "id": "beam_A1",
+      "name": "A1",
+      "row": "A",
+      "col": 1,
+      "center": {
+        "x": 7.690451826994286,
+        "y": 9.49624986205604
+      },
+      "boundaries": {
+        "west": "road_1774188307210",
+        "south": "road_1774188649137",
+        "north": "road_1774189052378",
+        "east": "road_1774189413932"
+      },
+      "cross_points": [
+        "intersection_extended_road_1774188307210_road_1774188649137",
+        "intersection_road_1774189413932_road_1774188649137_31_0",
+        "intersection_road_1774188307210_road_1774189052378_30_56",
+        "intersection_road_1774189413932_road_1774189052378_12_0"
+      ]
+    },
+    {
+      "id": "beam_A2",
+      "name": "A2",
+      "row": "A",
+      "col": 2,
+      "center": {
+        "x": 24.669194543836888,
+        "y": 12.717225062589177
+      },
+      "boundaries": {
+        "east": "road_1774188564120",
+        "south": "road_1774188649137",
+        "north": "road_1774189052378",
+        "west": "road_1774189413932"
+      },
+      "cross_points": [
+        "intersection_road_1774189413932_road_1774188649137_31_0",
+        "intersection_road_1774188564120_road_1774188649137_38_0",
+        "intersection_road_1774189413932_road_1774189052378_12_0",
+        "intersection_road_1774188564120_road_1774189052378_16_0"
+      ]
+    }
+  ]
+}

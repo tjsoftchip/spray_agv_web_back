@@ -779,10 +779,16 @@ export const generateMapFiles = async (req: Request, res: Response) => {
       session.roads
     );
     
-    // 生成转弯圆弧（V3.0新增）
+    // 生成转弯圆弧（V3.2优化 - 圆弧位于路口内侧）
     const allTurnArcs: any[] = [];
     for (const intersection of session.intersections) {
-      const arcs = mapFileGenerator.generateTurnArcs(intersection, session.roads);
+      const arcs = mapFileGenerator.generateTurnArcs(
+        intersection, 
+        session.roads, 
+        4.5, // 默认转弯半径
+        0.2, // 默认点间距
+        session.intersections // 传入所有路口用于计算相对位置
+      );
       allTurnArcs.push(...arcs);
     }
     session.turnArcs = allTurnArcs;
