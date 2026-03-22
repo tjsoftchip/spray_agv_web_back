@@ -11,7 +11,7 @@
  */
 
 import { Request, Response } from 'express';
-import GPSMap, { Road, Intersection, TurnPath, BeamPosition, GPSPoint, MapPoint } from '../models/GPSMap';
+import GPSMap, { Road, Intersection, TurnPath, TurnArc, StraightPath, BeamPosition, GPSPoint, MapPoint } from '../models/GPSMap';
 import {
   CoordinateService,
   IntersectionDetector,
@@ -41,7 +41,9 @@ interface MappingSession {
   } | null;
   roads: Road[];
   intersections: Intersection[];
-  turnPaths: TurnPath[];
+  turnPaths: TurnPath[];          // 旧版转弯路径（保留兼容）
+  turnArcs: TurnArc[];            // V3.0新增：转弯圆弧
+  straightPaths: StraightPath[];  // V3.0新增：直行线路
   beamPositions: BeamPosition[];
   recordingStartTime: number | null;
   lastUpdateTime: number;
@@ -70,6 +72,8 @@ function getOrCreateSession(): MappingSession {
       roads: [],
       intersections: [],
       turnPaths: [],
+      turnArcs: [],
+      straightPaths: [],
       beamPositions: [],
       recordingStartTime: null,
       lastUpdateTime: Date.now()
@@ -283,7 +287,21 @@ export const startRoadRecording = async (req: Request, res: Response) => {
 export const recordRoadPoint = async (req: Request, res: Response) => {
   try {
     const { roadId } = req.params;
-    const { latitude, longitude, altitude = 0 } = req.body;
+    // 确保GPS数据是数字类型（前端可能传递字符串）
+    const latitude = parseFloat(req.body.latitude);
+    const longitude = parseFloat(req.body.longitude);
+    const altitude = parseFloat(req.body.altitude) || 0;
+
+    // 验证GPS坐标有效性
+    if (isNaN(latitude) || isNaN(longitude) || 
+        latitude < -90 || latitude > 90 || 
+        longitude < -180 || longitude > 180) {
+      // 静默跳过无效坐标，不报错
+      return res.json({
+        success: true,
+        data: { skipped: true, reason: '无效的GPS坐标' }
+      });
+    }
 
     const session = getOrCreateSession();
     const road = session.roads.find(r => r.id === roadId);
@@ -341,9 +359,10 @@ export const endRoadRecording = async (req: Request, res: Response) => {
     const session = getOrCreateSession();
 
     if (!session.currentRoadId) {
-      return res.status(400).json({
-        success: false,
-        message: '当前没有正在采集的道路'
+      // 没有正在采集的道路，返回成功（幂等操作）
+      return res.json({
+        success: true,
+        message: '没有正在采集的道路'
       });
     }
 
@@ -754,19 +773,41 @@ export const generateMapFiles = async (req: Request, res: Response) => {
       });
     }
 
-    // 生成转弯路径
+    // 生成转弯路径（保留兼容）
     session.turnPaths = turnPathGenerator.generateTurnPaths(
       session.intersections,
       session.roads
     );
+    
+    // 生成转弯圆弧（V3.0新增）
+    const allTurnArcs: any[] = [];
+    for (const intersection of session.intersections) {
+      const arcs = mapFileGenerator.generateTurnArcs(intersection, session.roads);
+      allTurnArcs.push(...arcs);
+    }
+    session.turnArcs = allTurnArcs;
+    
+    // 生成直行线路（V3.0新增）
+    const allStraightPaths: any[] = [];
+    for (const intersection of session.intersections) {
+      const sp = mapFileGenerator.generateStraightPaths(
+        intersection,
+        session.roads,
+        allTurnArcs.filter(a => a.intersectionId === intersection.id)
+      );
+      allStraightPaths.push(...sp);
+    }
+    session.straightPaths = allStraightPaths;
 
     session.status = 'generating';
 
-    // 生成PGM地图
+    // 生成PGM地图（使用膨胀法）
     const pgmResult = mapFileGenerator.generatePGMMap(
       session.roads,
       session.intersections,
       session.beamPositions,
+      allTurnArcs,
+      allStraightPaths,
       0.05 // 5cm分辨率
     );
 
@@ -777,12 +818,13 @@ export const generateMapFiles = async (req: Request, res: Response) => {
       pgmResult.origin
     );
 
-    // 生成gps_routes.json
+    // 生成gps_routes.json（V3.0版本）
     const gpsRoutesJSON = mapFileGenerator.generateGPSRoutesJSON(
       session.origin,
       session.roads,
       session.intersections,
-      session.turnPaths
+      allTurnArcs,
+      allStraightPaths
     );
 
     // 生成beam_positions.json
@@ -868,9 +910,14 @@ export const getMappingStatus = async (req: Request, res: Response) => {
         hasOrigin: !!session.origin,
         roadCount: session.roads.length,
         intersectionCount: session.intersections.length,
+        turnArcCount: session.turnArcs.length,       // V3.0新增
+        straightPathCount: session.straightPaths.length,  // V3.0新增
         beamPositionCount: session.beamPositions.length,
         currentRoadId: session.currentRoadId,
-        lastUpdateTime: session.lastUpdateTime
+        lastUpdateTime: session.lastUpdateTime,
+        // V3.0新增：直接返回turnArcs和straightPaths数据
+        turnArcs: session.turnArcs,
+        straightPaths: session.straightPaths
       }
     });
   } catch (error) {
@@ -925,6 +972,8 @@ export const saveMappingToDatabase = async (req: Request, res: Response) => {
       roads: session.roads,
       intersections: session.intersections,
       turnPaths: session.turnPaths,
+      turnArcs: session.turnArcs,
+      straightPaths: session.straightPaths,
       beamPositions: session.beamPositions,
       status: session.status === 'completed' ? 'completed' : 'draft'
     });
@@ -970,7 +1019,9 @@ export const loadMappingFromDatabase = async (req: Request, res: Response) => {
       supplyStation: gpsMap.supplyStation || null,
       roads: gpsMap.roads,
       intersections: gpsMap.intersections,
-      turnPaths: gpsMap.turnPaths,
+      turnPaths: gpsMap.turnPaths || [],
+      turnArcs: (gpsMap as any).turnArcs || [],
+      straightPaths: (gpsMap as any).straightPaths || [],
       beamPositions: gpsMap.beamPositions,
       recordingStartTime: null,
       lastUpdateTime: Date.now()

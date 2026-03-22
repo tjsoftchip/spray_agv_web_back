@@ -45,7 +45,7 @@ export interface Intersection {
   connectedRoads: string[]; // 连接的道路ID
 }
 
-// 转弯路径
+// 转弯路径（旧版，保留兼容）
 export interface TurnPath {
   id: string;
   intersectionId: string;
@@ -58,6 +58,50 @@ export interface TurnPath {
     gps: GPSPoint;
     mapXy: MapPoint;
   }>;
+}
+
+// 转弯圆弧点
+export interface TurnArcPoint {
+  seq: number;
+  gps: GPSPoint;
+  mapXy: MapPoint;
+}
+
+// 转弯圆弧（V3.0新增）
+export interface TurnArc {
+  id: string;
+  intersectionId: string;
+  quadrant: number;  // 0-3，四个象限
+  radius: number;    // 转弯半径（米）
+  center: MapPoint;  // 圆弧中心
+  tangentPoints: MapPoint[];  // 切点位置
+  points: TurnArcPoint[];     // 圆弧路径点
+}
+
+// 直行线路点
+export interface StraightPathPoint {
+  seq: number;
+  gps: GPSPoint;
+  mapXy: MapPoint;
+}
+
+// 直行线路（V3.0新增）
+export interface StraightPath {
+  id: string;
+  intersectionId: string;
+  roadId: string;
+  points: StraightPathPoint[];
+}
+
+// 地图统计信息
+export interface MapStatistics {
+  totalPixels: number;
+  keepoutPixels: number;
+  highCostPixels: number;
+  preferredPixels: number;
+  keepoutPercent: number;
+  highCostPercent: number;
+  preferredPercent: number;
 }
 
 // 梁位数据
@@ -96,15 +140,18 @@ export interface GPSMapAttributes {
   };
   roads: Road[];
   intersections: Intersection[];
-  turnPaths: TurnPath[];
+  turnPaths: TurnPath[];      // 旧版转弯路径（保留兼容）
+  turnArcs?: TurnArc[];       // V3.0新增：转弯圆弧
+  straightPaths?: StraightPath[];  // V3.0新增：直行线路
   beamPositions: BeamPosition[];
+  statistics?: MapStatistics;  // V3.0新增：地图统计信息
   status: 'draft' | 'completed' | 'archived';
   createdAt: Date;
   updatedAt: Date;
 }
 
 // 创建时可省略的字段
-type GPSMapCreationAttributes = Optional<GPSMapAttributes, 'id' | 'createdAt' | 'updatedAt' | 'description' | 'supplyStation' | 'roads' | 'intersections' | 'turnPaths' | 'beamPositions' | 'status'>;
+type GPSMapCreationAttributes = Optional<GPSMapAttributes, 'id' | 'createdAt' | 'updatedAt' | 'description' | 'supplyStation' | 'roads' | 'intersections' | 'turnPaths' | 'turnArcs' | 'straightPaths' | 'beamPositions' | 'statistics' | 'status'>;
 
 // GPS地图模型
 class GPSMap extends Model<GPSMapAttributes, GPSMapCreationAttributes> implements GPSMapAttributes {
@@ -116,7 +163,10 @@ class GPSMap extends Model<GPSMapAttributes, GPSMapCreationAttributes> implement
   declare roads: Road[];
   declare intersections: Intersection[];
   declare turnPaths: TurnPath[];
+  declare turnArcs?: TurnArc[];
+  declare straightPaths?: StraightPath[];
   declare beamPositions: BeamPosition[];
+  declare statistics?: MapStatistics;
   declare status: 'draft' | 'completed' | 'archived';
   declare createdAt: Date;
   declare updatedAt: Date;
@@ -157,9 +207,21 @@ GPSMap.init(
       type: DataTypes.JSON,
       defaultValue: [],
     },
+    turnArcs: {
+      type: DataTypes.JSON,
+      defaultValue: [],
+    },
+    straightPaths: {
+      type: DataTypes.JSON,
+      defaultValue: [],
+    },
     beamPositions: {
       type: DataTypes.JSON,
       defaultValue: [],
+    },
+    statistics: {
+      type: DataTypes.JSON,
+      allowNull: true,
     },
     status: {
       type: DataTypes.ENUM('draft', 'completed', 'archived'),
