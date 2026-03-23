@@ -33,7 +33,14 @@ interface BeamPosition {
     east?: string;
     west?: string;
   };
-  crossPoints: string[];
+  crossPoints?: string[];           // 可选字段，兼容模型
+  corner_intersections?: string[];  // V4.0新增
+  neighbors?: {                     // V4.0新增
+    left?: string;
+    right?: string;
+    top?: string;
+    bottom?: string;
+  };
 }
 
 interface Road {

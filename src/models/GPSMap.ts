@@ -54,11 +54,11 @@ export interface Intersection {
     gps: GPSPoint;
     mapXy: MapPoint;
   };
-  road_v_id: string;           // 纵向道路ID（V4.0新增）
-  road_h_id: string;           // 横向道路ID（V4.0新增）
+  road_v_id?: string;          // 纵向道路ID（V4.0新增，可选）
+  road_h_id?: string;          // 横向道路ID（V4.0新增，可选）
   connectedRoads: string[];    // 连接的道路ID（保留兼容）
-  neighbors: IntersectionNeighbors;  // 四个方向的相邻交点（V4.0新增）
-  valid_quadrants: number[];   // 有效象限列表 [0-3]（V4.0新增）
+  neighbors?: IntersectionNeighbors;  // 四个方向的相邻交点（V4.0新增，可选）
+  valid_quadrants?: number[];  // 有效象限列表 [0-3]（V4.0新增，可选）
 }
 
 // 转弯路径（旧版，保留兼容）
@@ -121,12 +121,6 @@ export interface MapStatistics {
   preferredPercent: number;
 }
 
-// 梁位边界道路信息（V4.0扩展）
-export interface BeamBoundary {
-  road_id: string;           // 道路ID
-  position: 'top' | 'bottom' | 'left' | 'right'; // 梁位相对于道路的位置
-}
-
 // 梁位相邻梁位（V4.0新增）
 export interface BeamNeighbors {
   left?: string;   // 左侧相邻梁位ID
@@ -143,14 +137,14 @@ export interface BeamPosition {
   col: number;      // 列标签 1, 2, 3...
   center: MapPoint;
   boundaries: {
-    north?: BeamBoundary; // 北边道路信息（V4.0扩展）
-    south?: BeamBoundary;
-    east?: BeamBoundary;
-    west?: BeamBoundary;
+    north?: string; // 北边道路ID（保持简单字符串格式）
+    south?: string;
+    east?: string;
+    west?: string;
   };
-  corner_intersections: string[]; // 四个角对应的交叉点ID（V4.0改名）
-  crossPoints?: string[];         // 兼容旧字段名
-  neighbors: BeamNeighbors;       // 相邻梁位关系（V4.0新增）
+  corner_intersections?: string[]; // 四个角对应的交叉点ID（V4.0新增）
+  crossPoints?: string[];          // 兼容旧字段名
+  neighbors?: BeamNeighbors;       // 相邻梁位关系（V4.0新增）
 }
 
 // GPS地图属性

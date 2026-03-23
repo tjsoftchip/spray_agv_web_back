@@ -3840,6 +3840,11 @@ export class IntersectionProcessor {
   ): number[] {
     const validQuadrants: number[] = [];
 
+    // 如果neighbors为空，直接返回空数组
+    if (!neighbors) {
+      return validQuadrants;
+    }
+
     // 辅助函数：检查两个道路是否有交点
     const intersectionExists = (roadVId: string, roadHId: string): boolean => {
       const key = `${roadVId},${roadHId}`;
@@ -3881,12 +3886,13 @@ export class IntersectionProcessor {
   /**
    * 判断路口类型
    */
-  getIntersectionType(validQuadrants: number[]): string {
+  getIntersectionType(validQuadrants: number[]): 'cross' | 't_junction' | 'corner' | 'L' | 'T' | 'partial_1' | 'partial_2' | 'partial_3' {
     const num = validQuadrants.length;
     if (num === 1) return 'L';
     if (num === 2) return 'T';
     if (num === 4) return 'cross';
-    return `partial_${num}`;
+    if (num === 3) return 'partial_3';
+    return 'partial_1';
   }
 
   /**
@@ -4183,7 +4189,8 @@ export class BeamPositionProcessor {
     beamPositions: BeamPosition[]
   ): string | undefined {
     // 象限与对角交点的对应关系
-    const diagonalMap: Record<number, { neighbor1: keyof Intersection['neighbors']; neighbor2: keyof Intersection['neighbors'] }> = {
+    type NeighborDirection = 'top' | 'bottom' | 'left' | 'right';
+    const diagonalMap: Record<number, { neighbor1: NeighborDirection; neighbor2: NeighborDirection }> = {
       0: { neighbor1: 'top', neighbor2: 'right' },
       1: { neighbor1: 'top', neighbor2: 'left' },
       2: { neighbor1: 'bottom', neighbor2: 'left' },
