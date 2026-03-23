@@ -34,15 +34,31 @@ export interface Road {
   points: RoadPoint[];
 }
 
-// 交叉点数据
+// 交叉点相邻交点
+export interface IntersectionNeighbors {
+  top?: string;      // 上方相邻交点ID
+  bottom?: string;   // 下方相邻交点ID
+  left?: string;     // 左方相邻交点ID
+  right?: string;    // 右方相邻交点ID
+  top_road_id?: string;   // 上方相邻交点的横向路ID
+  bottom_road_id?: string; // 下方相邻交点的横向路ID
+  left_road_id?: string;  // 左方相邻交点的纵向路ID
+  right_road_id?: string; // 右方相邻交点的纵向路ID
+}
+
+// 交叉点数据（V4.0扩展）
 export interface Intersection {
   id: string;
-  type: 'cross' | 't_junction' | 'corner'; // 十字/T字/转角
+  type: 'cross' | 't_junction' | 'corner' | 'L' | 'T' | 'partial_1' | 'partial_2' | 'partial_3'; // 路口类型
   center: {
     gps: GPSPoint;
     mapXy: MapPoint;
   };
-  connectedRoads: string[]; // 连接的道路ID
+  road_v_id: string;           // 纵向道路ID（V4.0新增）
+  road_h_id: string;           // 横向道路ID（V4.0新增）
+  connectedRoads: string[];    // 连接的道路ID（保留兼容）
+  neighbors: IntersectionNeighbors;  // 四个方向的相邻交点（V4.0新增）
+  valid_quadrants: number[];   // 有效象限列表 [0-3]（V4.0新增）
 }
 
 // 转弯路径（旧版，保留兼容）
@@ -67,7 +83,7 @@ export interface TurnArcPoint {
   mapXy: MapPoint;
 }
 
-// 转弯圆弧（V3.0新增）
+// 转弯圆弧（V4.0扩展）
 export interface TurnArc {
   id: string;
   intersectionId: string;
@@ -76,6 +92,7 @@ export interface TurnArc {
   center: MapPoint;  // 圆弧中心
   tangentPoints: MapPoint[];  // 切点位置
   points: TurnArcPoint[];     // 圆弧路径点
+  beam_position_id?: string;  // 关联的梁位ID（V4.0新增）
 }
 
 // 直行线路点
@@ -104,7 +121,21 @@ export interface MapStatistics {
   preferredPercent: number;
 }
 
-// 梁位数据
+// 梁位边界道路信息（V4.0扩展）
+export interface BeamBoundary {
+  road_id: string;           // 道路ID
+  position: 'top' | 'bottom' | 'left' | 'right'; // 梁位相对于道路的位置
+}
+
+// 梁位相邻梁位（V4.0新增）
+export interface BeamNeighbors {
+  left?: string;   // 左侧相邻梁位ID
+  right?: string;  // 右侧相邻梁位ID
+  top?: string;    // 上方相邻梁位ID
+  bottom?: string; // 下方相邻梁位ID
+}
+
+// 梁位数据（V4.0扩展）
 export interface BeamPosition {
   id: string;
   name: string;
@@ -112,12 +143,14 @@ export interface BeamPosition {
   col: number;      // 列标签 1, 2, 3...
   center: MapPoint;
   boundaries: {
-    north?: string; // 北边道路ID
-    south?: string;
-    east?: string;
-    west?: string;
+    north?: BeamBoundary; // 北边道路信息（V4.0扩展）
+    south?: BeamBoundary;
+    east?: BeamBoundary;
+    west?: BeamBoundary;
   };
-  crossPoints: string[]; // 四个角对应的交叉点ID
+  corner_intersections: string[]; // 四个角对应的交叉点ID（V4.0改名）
+  crossPoints?: string[];         // 兼容旧字段名
+  neighbors: BeamNeighbors;       // 相邻梁位关系（V4.0新增）
 }
 
 // GPS地图属性

@@ -3244,6 +3244,997 @@ export class SprayModeDecider {
   }
 }
 
+/**
+ * GPS道路数据处理器（V4.0新增）
+ * 按照设计文档 GPS_ROAD_DATA_PROCESSING_ALGORITHM.md 实现
+ * 
+ * 功能：
+ * 1. 异常点剔除（速度约束）
+ * 2. 道路主方向识别（圆周平均）
+ * 3. 主方向约束下道路拟合
+ * 4. 边缘路口处理（延长/裁剪）
+ * 5. 道路点重采样（固定间距）
+ */
+export class GPSRoadProcessor {
+  // 常量定义
+  private readonly MAX_DISTANCE_THRESHOLD = 1.0;  // 异常点距离阈值（米）
+  private readonly MIN_POINTS = 3;                // 最少点数
+  private readonly SAMPLE_DISTANCE = 0.2;         // 重采样间距（米）
+  private readonly EDGE_TOLERANCE = 1.5;          // 边缘路口容差（米）
+  private readonly ANGLE_TOLERANCE = 0.1;         // 角度容差（弧度，约5.7度）
+  private readonly DEAD_END_THRESHOLD = 10;       // 断头路阈值（米）
+
+  /**
+   * 剔除GPS轨迹中的异常点
+   * 使用速度约束检测：相邻点间距超过阈值视为异常
+   */
+  removeOutlierPoints(points: RoadPoint[], maxDistance: number = this.MAX_DISTANCE_THRESHOLD): RoadPoint[] {
+    if (points.length < this.MIN_POINTS) {
+      return points;
+    }
+
+    const validPoints: RoadPoint[] = [points[0]]; // 保留第一个点
+
+    for (let i = 1; i < points.length; i++) {
+      const prev = validPoints[validPoints.length - 1];
+      const curr = points[i];
+
+      // 计算相邻点距离
+      const distance = this.haversineDistance(
+        prev.gps.latitude, prev.gps.longitude,
+        curr.gps.latitude, curr.gps.longitude
+      );
+
+      if (distance <= maxDistance) {
+        validPoints.push(curr);
+      }
+      // 异常点，跳过
+    }
+
+    // 确保保留足够的点
+    if (validPoints.length < this.MIN_POINTS) {
+      return points.slice(0, this.MIN_POINTS);
+    }
+
+    return validPoints;
+  }
+
+  /**
+   * 计算两个GPS坐标之间的球面距离（米）
+   */
+  private haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371000; // 地球半径（米）
+
+    const phi1 = lat1 * Math.PI / 180;
+    const phi2 = lat2 * Math.PI / 180;
+    const deltaPhi = (lat2 - lat1) * Math.PI / 180;
+    const deltaLambda = (lon2 - lon1) * Math.PI / 180;
+
+    const a = Math.sin(deltaPhi / 2) ** 2 +
+              Math.cos(phi1) * Math.cos(phi2) * Math.sin(deltaLambda / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c;
+  }
+
+  /**
+   * 识别道路的主方向
+   * 使用圆周平均算法处理角度循环问题
+   * 
+   * 返回: { longitudinalAngle, horizontalAngle }
+   */
+  identifyRoadDirections(roads: Road[]): { longitudinalAngle: number; horizontalAngle: number } {
+    // 分离纵向路和横向路
+    const longitudinalRoads = roads.filter(r => r.type === 'longitudinal');
+    const horizontalRoads = roads.filter(r => r.type === 'horizontal');
+
+    // 对所有纵向路拟合方向角度
+    const longitudinalAngles: number[] = [];
+    for (const road of longitudinalRoads) {
+      const angle = this.fitLineAngle(road.points);
+      longitudinalAngles.push(angle);
+    }
+
+    // 对所有横向路拟合方向角度
+    const horizontalAngles: number[] = [];
+    for (const road of horizontalRoads) {
+      const angle = this.fitLineAngle(road.points);
+      horizontalAngles.push(angle);
+    }
+
+    // 计算主方向（圆周平均）
+    let longitudinalAngle = this.circularMean(longitudinalAngles);
+    let horizontalAngle = this.circularMean(horizontalAngles);
+
+    // 校验：两方向应该垂直（相差约90°）
+    const angleDiff = Math.abs(this.normalizeAnglePi(longitudinalAngle - horizontalAngle));
+
+    if (!(Math.PI / 2 - this.ANGLE_TOLERANCE < angleDiff && angleDiff < Math.PI / 2 + this.ANGLE_TOLERANCE)) {
+      // 如果不垂直，以纵向路为准，强制横向路垂直
+      horizontalAngle = longitudinalAngle + Math.PI / 2;
+      horizontalAngle = this.normalizeAnglePi(horizontalAngle);
+    }
+
+    return { longitudinalAngle, horizontalAngle };
+  }
+
+  /**
+   * 拟合点集的方向角度
+   * 使用主成分分析(PCA)的方法
+   * 返回直线的方向角度（弧度，范围[0, π)）
+   */
+  private fitLineAngle(points: RoadPoint[]): number {
+    if (points.length < 2) {
+      return 0.0;
+    }
+
+    // 计算协方差矩阵
+    const n = points.length;
+    const meanX = points.reduce((sum, p) => sum + p.mapXy.x, 0) / n;
+    const meanY = points.reduce((sum, p) => sum + p.mapXy.y, 0) / n;
+
+    let covXX = 0, covYY = 0, covXY = 0;
+    for (const p of points) {
+      const dx = p.mapXy.x - meanX;
+      const dy = p.mapXy.y - meanY;
+      covXX += dx * dx;
+      covYY += dy * dy;
+      covXY += dx * dy;
+    }
+    covXX /= n;
+    covYY /= n;
+    covXY /= n;
+
+    // 计算主方向角度
+    let angle = 0.5 * Math.atan2(2 * covXY, covXX - covYY);
+
+    // 确保角度在 [0, π) 范围内
+    return this.normalizeAnglePi(angle);
+  }
+
+  /**
+   * 计算角度的圆周平均（处理角度循环问题）
+   */
+  private circularMean(angles: number[]): number {
+    if (angles.length === 0) {
+      return 0.0;
+    }
+
+    const sinSum = angles.reduce((sum, a) => sum + Math.sin(a), 0);
+    const cosSum = angles.reduce((sum, a) => sum + Math.cos(a), 0);
+
+    return Math.atan2(sinSum, cosSum);
+  }
+
+  /**
+   * 将角度归一化到 [0, π) 范围
+   */
+  private normalizeAnglePi(angle: number): number {
+    while (angle < 0) {
+      angle += Math.PI;
+    }
+    while (angle >= Math.PI) {
+      angle -= Math.PI;
+    }
+    return angle;
+  }
+
+  /**
+   * 将角度归一化到 [-π, π] 范围
+   */
+  private normalizeAngle(angle: number): number {
+    while (angle > Math.PI) {
+      angle -= 2 * Math.PI;
+    }
+    while (angle < -Math.PI) {
+      angle += 2 * Math.PI;
+    }
+    return angle;
+  }
+
+  /**
+   * 拟合直线数据结构
+   */
+  createFittedLine(start: MapPoint, end: MapPoint, directionAngle: number): FittedLine {
+    return {
+      start,
+      end,
+      directionAngle,
+      length: () => Math.sqrt((end.x - start.x) ** 2 + (end.y - start.y) ** 2),
+      directionVector: () => {
+        const len = Math.sqrt((end.x - start.x) ** 2 + (end.y - start.y) ** 2);
+        if (len < 1e-10) return { x: 0, y: 0 };
+        return { x: (end.x - start.x) / len, y: (end.y - start.y) / len };
+      }
+    };
+  }
+
+  /**
+   * 在给定主方向约束下拟合道路直线
+   */
+  fitRoadWithDirection(road: Road, mainAngle: number, coordinateService: CoordinateService): FittedLine {
+    const points = road.points;
+
+    if (points.length < 2) {
+      throw new Error('道路点数不足');
+    }
+
+    // 主方向单位向量
+    const dx = Math.cos(mainAngle);
+    const dy = Math.sin(mainAngle);
+
+    // 垂直方向单位向量（法向量）
+    const perpDx = -dy;
+    const perpDy = dx;
+
+    // 计算每个点沿主方向的投影和垂直偏移
+    const projections: number[] = [];
+    const offsets: number[] = [];
+
+    for (const p of points) {
+      // 沿主方向的投影距离
+      const proj = p.mapXy.x * dx + p.mapXy.y * dy;
+      projections.push(proj);
+
+      // 垂直偏移量
+      const offset = p.mapXy.x * perpDx + p.mapXy.y * perpDy;
+      offsets.push(offset);
+    }
+
+    // 道路中心线的垂直偏移（取中位数，抗异常）
+    const centerOffset = this.median(offsets);
+
+    // 道路端点（沿主方向的最远点）
+    const minProj = Math.min(...projections);
+    const maxProj = Math.max(...projections);
+
+    // 计算端点坐标
+    const start: MapPoint = {
+      x: minProj * dx + centerOffset * perpDx,
+      y: minProj * dy + centerOffset * perpDy
+    };
+    const end: MapPoint = {
+      x: maxProj * dx + centerOffset * perpDy,
+      y: maxProj * dy + centerOffset * perpDy
+    };
+
+    return this.createFittedLine(start, end, mainAngle);
+  }
+
+  /**
+   * 计算数组的中位数
+   */
+  private median(arr: number[]): number {
+    const sorted = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
+  /**
+   * 计算两条直线的交点
+   */
+  calculateLineIntersection(lineV: FittedLine, lineH: FittedLine): MapPoint | null {
+    const startV = lineV.start;
+    const dirV = lineV.directionVector();
+
+    const startH = lineH.start;
+    const dirH = lineH.directionVector();
+
+    // 求解: start_v + t * dir_v = start_h + s * dir_h
+    const denom = dirV.x * dirH.y - dirV.y * dirH.x;
+
+    if (Math.abs(denom) < 1e-10) {
+      // 平行线，无交点
+      return null;
+    }
+
+    const dx = startH.x - startV.x;
+    const dy = startH.y - startV.y;
+
+    const t = (dx * dirH.y - dy * dirH.x) / denom;
+
+    return {
+      x: startV.x + t * dirV.x,
+      y: startV.y + t * dirV.y
+    };
+  }
+
+  /**
+   * 判断是否为边缘路口
+   */
+  isEdgeIntersection(
+    lineV: FittedLine,
+    lineH: FittedLine,
+    intersection: MapPoint,
+    tolerance: number = this.EDGE_TOLERANCE
+  ): { isEdge: boolean; vStatus: string; hStatus: string } {
+    const dirV = lineV.directionVector();
+    const dirH = lineH.directionVector();
+
+    // 纵向路投影
+    const vProjStart = (intersection.x - lineV.start.x) * dirV.x +
+                       (intersection.y - lineV.start.y) * dirV.y;
+    const vLength = lineV.length();
+
+    // 横向路投影
+    const hProjStart = (intersection.x - lineH.start.x) * dirH.x +
+                       (intersection.y - lineH.start.y) * dirH.y;
+    const hLength = lineH.length();
+
+    // 判断纵向路状态
+    let vStatus = 'normal';
+    if (-tolerance <= vProjStart && vProjStart <= vLength + tolerance) {
+      vStatus = 'normal';
+    } else if (vProjStart > vLength + tolerance) {
+      vStatus = 'trim';
+    } else {
+      vStatus = 'extend';
+    }
+
+    // 判断横向路状态
+    let hStatus = 'normal';
+    if (-tolerance <= hProjStart && hProjStart <= hLength + tolerance) {
+      hStatus = 'normal';
+    } else if (hProjStart > hLength + tolerance) {
+      hStatus = 'trim';
+    } else {
+      hStatus = 'extend';
+    }
+
+    const isEdge = vStatus !== 'normal' || hStatus !== 'normal';
+
+    return { isEdge, vStatus, hStatus };
+  }
+
+  /**
+   * 处理边缘路口：延长或裁剪道路
+   */
+  processEdgeIntersection(
+    lineV: FittedLine,
+    lineH: FittedLine,
+    intersection: MapPoint,
+    vStatus: string,
+    hStatus: string
+  ): { lineV: FittedLine; lineH: FittedLine } {
+    let newLineV = { ...lineV };
+    let newLineH = { ...lineH };
+
+    // 处理纵向路
+    if (vStatus === 'extend') {
+      const dirV = lineV.directionVector();
+      const toStart = (intersection.x - lineV.start.x) * dirV.x +
+                      (intersection.y - lineV.start.y) * dirV.y;
+      const toEnd = (intersection.x - lineV.end.x) * (-dirV.x) +
+                    (intersection.y - lineV.end.y) * (-dirV.y);
+
+      if (toStart > toEnd) {
+        newLineV = this.createFittedLine(intersection, lineV.end, lineV.directionAngle);
+      } else {
+        newLineV = this.createFittedLine(lineV.start, intersection, lineV.directionAngle);
+      }
+    } else if (vStatus === 'trim') {
+      const dirV = lineV.directionVector();
+      const projStart = (intersection.x - lineV.start.x) * dirV.x +
+                        (intersection.y - lineV.start.y) * dirV.y;
+
+      if (projStart > lineV.length() / 2) {
+        newLineV = this.createFittedLine(lineV.start, intersection, lineV.directionAngle);
+      } else {
+        newLineV = this.createFittedLine(intersection, lineV.end, lineV.directionAngle);
+      }
+    }
+
+    // 处理横向路
+    if (hStatus === 'extend') {
+      const dirH = lineH.directionVector();
+      const toStart = (intersection.x - lineH.start.x) * dirH.x +
+                      (intersection.y - lineH.start.y) * dirH.y;
+      const toEnd = (intersection.x - lineH.end.x) * (-dirH.x) +
+                    (intersection.y - lineH.end.y) * (-dirH.y);
+
+      if (toStart > toEnd) {
+        newLineH = this.createFittedLine(intersection, lineH.end, lineH.directionAngle);
+      } else {
+        newLineH = this.createFittedLine(lineH.start, intersection, lineH.directionAngle);
+      }
+    } else if (hStatus === 'trim') {
+      const dirH = lineH.directionVector();
+      const projStart = (intersection.x - lineH.start.x) * dirH.x +
+                        (intersection.y - lineH.start.y) * dirH.y;
+
+      if (projStart > lineH.length() / 2) {
+        newLineH = this.createFittedLine(lineH.start, intersection, lineH.directionAngle);
+      } else {
+        newLineH = this.createFittedLine(intersection, lineH.end, lineH.directionAngle);
+      }
+    }
+
+    return { lineV: newLineV, lineH: newLineH };
+  }
+
+  /**
+   * 对拟合后的道路进行重采样
+   */
+  resampleRoadPoints(
+    line: FittedLine,
+    sampleDistance: number = this.SAMPLE_DISTANCE,
+    coordinateService: CoordinateService
+  ): RoadPoint[] {
+    const length = line.length();
+    const dirVec = line.directionVector();
+
+    // 计算采样点数
+    const numPoints = Math.floor(length / sampleDistance) + 1;
+
+    const points: RoadPoint[] = [];
+    for (let i = 0; i < numPoints; i++) {
+      // 计算采样点位置
+      const dist = i * sampleDistance;
+      const x = line.start.x + dist * dirVec.x;
+      const y = line.start.y + dist * dirVec.y;
+
+      // 计算GPS坐标
+      const gps = coordinateService.mapToGPS(x, y);
+
+      points.push({
+        seq: i,
+        gps,
+        mapXy: { x, y }
+      });
+    }
+
+    return points;
+  }
+
+  /**
+   * 完整处理一条道路
+   * 1. 剔除异常点
+   * 2. 在主方向约束下拟合
+   * 3. 重采样
+   */
+  processRoad(
+    road: Road,
+    mainAngle: number,
+    coordinateService: CoordinateService
+  ): { fittedLine: FittedLine; resampledPoints: RoadPoint[] } {
+    // 1. 剔除异常点
+    const cleanedPoints = this.removeOutlierPoints(road.points);
+
+    // 创建临时道路用于拟合
+    const cleanedRoad = { ...road, points: cleanedPoints };
+
+    // 2. 在主方向约束下拟合
+    const fittedLine = this.fitRoadWithDirection(cleanedRoad, mainAngle, coordinateService);
+
+    // 3. 重采样
+    const resampledPoints = this.resampleRoadPoints(fittedLine, this.SAMPLE_DISTANCE, coordinateService);
+
+    return { fittedLine, resampledPoints };
+  }
+}
+
+/**
+ * 拟合直线数据结构
+ */
+export interface FittedLine {
+  start: MapPoint;
+  end: MapPoint;
+  directionAngle: number;
+  length: () => number;
+  directionVector: () => { x: number; y: number };
+}
+
+/**
+ * 路口处理器（V4.0新增）
+ * 按照设计文档实现路口索引、相邻交点查询、象限有效性判断
+ */
+export class IntersectionProcessor {
+  /**
+   * 构建路口索引
+   */
+  buildIntersectionIndex(intersections: Intersection[]): {
+    byId: Map<string, Intersection>;
+    byRoads: Map<string, string>;  // key: "roadV_id,roadH_id"
+    byRoad: Map<string, string[]>; // key: roadId, value: intersectionIds
+  } {
+    const byId = new Map<string, Intersection>();
+    const byRoads = new Map<string, string>();
+    const byRoad = new Map<string, string[]>();
+
+    for (const inter of intersections) {
+      // 按ID索引
+      byId.set(inter.id, inter);
+
+      // 按道路对索引
+      if (inter.road_v_id && inter.road_h_id) {
+        const key = `${inter.road_v_id},${inter.road_h_id}`;
+        byRoads.set(key, inter.id);
+      }
+
+      // 按单条道路索引
+      if (inter.road_v_id) {
+        const list = byRoad.get(inter.road_v_id) || [];
+        list.push(inter.id);
+        byRoad.set(inter.road_v_id, list);
+      }
+      if (inter.road_h_id) {
+        const list = byRoad.get(inter.road_h_id) || [];
+        list.push(inter.id);
+        byRoad.set(inter.road_h_id, list);
+      }
+    }
+
+    return { byId, byRoads, byRoad };
+  }
+
+  /**
+   * 获取交点四个方向的相邻交点
+   */
+  getNeighborIntersections(
+    inter: Intersection,
+    roads: Road[],
+    index: { byId: Map<string, Intersection>; byRoad: Map<string, string[]> }
+  ): Intersection['neighbors'] {
+    const neighbors: Intersection['neighbors'] = {
+      top: undefined,
+      bottom: undefined,
+      left: undefined,
+      right: undefined,
+      top_road_id: undefined,
+      bottom_road_id: undefined,
+      left_road_id: undefined,
+      right_road_id: undefined
+    };
+
+    if (!inter.road_v_id || !inter.road_h_id) {
+      return neighbors;
+    }
+
+    // 获取纵向路上的所有交点（按y坐标排序）
+    const vIntersections = (index.byRoad.get(inter.road_v_id) || [])
+      .map(id => index.byId.get(id)!)
+      .filter(i => i !== undefined)
+      .sort((a, b) => a.center.mapXy.y - b.center.mapXy.y);
+
+    // 找到当前交点的位置
+    const vIdx = vIntersections.findIndex(i => i.id === inter.id);
+
+    if (vIdx > 0) {
+      neighbors.bottom = vIntersections[vIdx - 1].id;
+      neighbors.bottom_road_id = vIntersections[vIdx - 1].road_h_id;
+    }
+    if (vIdx >= 0 && vIdx < vIntersections.length - 1) {
+      neighbors.top = vIntersections[vIdx + 1].id;
+      neighbors.top_road_id = vIntersections[vIdx + 1].road_h_id;
+    }
+
+    // 获取横向路上的所有交点（按x坐标排序）
+    const hIntersections = (index.byRoad.get(inter.road_h_id) || [])
+      .map(id => index.byId.get(id)!)
+      .filter(i => i !== undefined)
+      .sort((a, b) => a.center.mapXy.x - b.center.mapXy.x);
+
+    // 找到当前交点的位置
+    const hIdx = hIntersections.findIndex(i => i.id === inter.id);
+
+    if (hIdx > 0) {
+      neighbors.left = hIntersections[hIdx - 1].id;
+      neighbors.left_road_id = hIntersections[hIdx - 1].road_v_id;
+    }
+    if (hIdx >= 0 && hIdx < hIntersections.length - 1) {
+      neighbors.right = hIntersections[hIdx + 1].id;
+      neighbors.right_road_id = hIntersections[hIdx + 1].road_v_id;
+    }
+
+    return neighbors;
+  }
+
+  /**
+   * 判断路口的哪些象限有效
+   * 根据设计文档的双条件判断定理
+   */
+  determineValidQuadrants(
+    inter: Intersection,
+    neighbors: Intersection['neighbors'],
+    index: { byRoads: Map<string, string> }
+  ): number[] {
+    const validQuadrants: number[] = [];
+
+    // 辅助函数：检查两个道路是否有交点
+    const intersectionExists = (roadVId: string, roadHId: string): boolean => {
+      const key = `${roadVId},${roadHId}`;
+      return index.byRoads.has(key);
+    };
+
+    // Q0: 右上象限
+    // 需要：右方有相邻交点 AND 上方有相邻交点 AND 对角交点存在
+    if (neighbors.right && neighbors.top &&
+        neighbors.right_road_id && neighbors.top_road_id &&
+        intersectionExists(neighbors.right_road_id, neighbors.top_road_id)) {
+      validQuadrants.push(0);
+    }
+
+    // Q1: 左上象限
+    if (neighbors.left && neighbors.top &&
+        neighbors.left_road_id && neighbors.top_road_id &&
+        intersectionExists(neighbors.left_road_id, neighbors.top_road_id)) {
+      validQuadrants.push(1);
+    }
+
+    // Q2: 左下象限
+    if (neighbors.left && neighbors.bottom &&
+        neighbors.left_road_id && neighbors.bottom_road_id &&
+        intersectionExists(neighbors.left_road_id, neighbors.bottom_road_id)) {
+      validQuadrants.push(2);
+    }
+
+    // Q3: 右下象限
+    if (neighbors.right && neighbors.bottom &&
+        neighbors.right_road_id && neighbors.bottom_road_id &&
+        intersectionExists(neighbors.right_road_id, neighbors.bottom_road_id)) {
+      validQuadrants.push(3);
+    }
+
+    return validQuadrants;
+  }
+
+  /**
+   * 判断路口类型
+   */
+  getIntersectionType(validQuadrants: number[]): string {
+    const num = validQuadrants.length;
+    if (num === 1) return 'L';
+    if (num === 2) return 'T';
+    if (num === 4) return 'cross';
+    return `partial_${num}`;
+  }
+
+  /**
+   * 处理所有路口：添加邻居和有效象限信息
+   */
+  processIntersections(
+    intersections: Intersection[],
+    roads: Road[]
+  ): Intersection[] {
+    // 构建索引
+    const index = this.buildIntersectionIndex(intersections);
+
+    // 为每个路口添加邻居和有效象限
+    return intersections.map(inter => {
+      const neighbors = this.getNeighborIntersections(inter, roads, index);
+      const validQuadrants = this.determineValidQuadrants(inter, neighbors, index);
+      const type = this.getIntersectionType(validQuadrants);
+
+      return {
+        ...inter,
+        neighbors,
+        valid_quadrants: validQuadrants,
+        type
+      };
+    });
+  }
+}
+
+/**
+ * 圆弧生成器（V4.0重构）
+ * 基于有效象限生成转弯圆弧
+ */
+export class TurnArcGeneratorV4 {
+  private readonly DEFAULT_RADIUS = 4.5;    // 默认转弯半径（米）
+  private readonly POINT_SPACING = 0.2;     // 圆弧点间距（米）
+  private coordinateService: CoordinateService;
+
+  constructor(coordinateService: CoordinateService) {
+    this.coordinateService = coordinateService;
+  }
+
+  /**
+   * 为单个路口生成转弯圆弧
+   */
+  generateTurnArcsForIntersection(
+    inter: Intersection,
+    radius: number = this.DEFAULT_RADIUS
+  ): TurnArc[] {
+    const arcs: TurnArc[] = [];
+    const cx = inter.center.mapXy.x;
+    const cy = inter.center.mapXy.y;
+
+    // 只为有效象限生成圆弧
+    for (const quadrant of inter.valid_quadrants || []) {
+      const arc = this.createArcForQuadrant(inter, quadrant, cx, cy, radius);
+      if (arc) {
+        arcs.push(arc);
+      }
+    }
+
+    return arcs;
+  }
+
+  /**
+   * 为单个象限创建圆弧
+   */
+  private createArcForQuadrant(
+    inter: Intersection,
+    quadrant: number,
+    cx: number,
+    cy: number,
+    radius: number
+  ): TurnArc | null {
+    // 根据象限确定圆心偏移方向
+    const quadrantOffsets: Record<number, { dx: number; dy: number }> = {
+      0: { dx: radius, dy: radius },    // Q0: 右上
+      1: { dx: -radius, dy: radius },   // Q1: 左上
+      2: { dx: -radius, dy: -radius },  // Q2: 左下
+      3: { dx: radius, dy: -radius }    // Q3: 右下
+    };
+
+    const offset = quadrantOffsets[quadrant];
+    if (!offset) return null;
+
+    // 圆心坐标
+    const ox = cx + offset.dx;
+    const oy = cy + offset.dy;
+
+    // 根据象限确定切点和角度范围
+    let t1: MapPoint, t2: MapPoint;
+    let startAngle: number, endAngle: number;
+
+    switch (quadrant) {
+      case 0: // Q0: 右上，从下切点到左切点
+        t1 = { x: ox, y: oy - radius };
+        t2 = { x: ox - radius, y: oy };
+        startAngle = -Math.PI / 2;
+        endAngle = -Math.PI;
+        break;
+      case 1: // Q1: 左上，从下切点到右切点
+        t1 = { x: ox, y: oy - radius };
+        t2 = { x: ox + radius, y: oy };
+        startAngle = -Math.PI / 2;
+        endAngle = 0;
+        break;
+      case 2: // Q2: 左下，从上切点到右切点
+        t1 = { x: ox, y: oy + radius };
+        t2 = { x: ox + radius, y: oy };
+        startAngle = Math.PI / 2;
+        endAngle = 0;
+        break;
+      case 3: // Q3: 右下，从上切点到左切点
+        t1 = { x: ox, y: oy + radius };
+        t2 = { x: ox - radius, y: oy };
+        startAngle = Math.PI / 2;
+        endAngle = Math.PI;
+        break;
+      default:
+        return null;
+    }
+
+    // 离散化圆弧（90度弧）
+    const arcLength = radius * Math.PI / 2;
+    const numPoints = Math.max(11, Math.ceil(arcLength / this.POINT_SPACING) + 1);
+    const points: TurnArcPoint[] = [];
+
+    const angleStep = (endAngle - startAngle) / (numPoints - 1);
+
+    for (let i = 0; i < numPoints; i++) {
+      const angle = startAngle + i * angleStep;
+      const x = ox + radius * Math.cos(angle);
+      const y = oy + radius * Math.sin(angle);
+
+      // 计算GPS坐标
+      const gps = this.coordinateService.mapToGPS(x, y);
+
+      points.push({
+        seq: i,
+        gps,
+        mapXy: { x, y }
+      });
+    }
+
+    // 确定关联的梁位ID（根据象限对应的对角交点）
+    let beamPositionId: string | undefined;
+    if (inter.neighbors) {
+      const diagonalIntersections: Record<number, string | undefined> = {
+        0: inter.neighbors.top && inter.neighbors.right ?
+           this.getDiagonalBeamId(inter.id, inter.neighbors.top, inter.neighbors.right) : undefined,
+        1: inter.neighbors.top && inter.neighbors.left ?
+           this.getDiagonalBeamId(inter.id, inter.neighbors.top, inter.neighbors.left) : undefined,
+        2: inter.neighbors.bottom && inter.neighbors.left ?
+           this.getDiagonalBeamId(inter.id, inter.neighbors.bottom, inter.neighbors.left) : undefined,
+        3: inter.neighbors.bottom && inter.neighbors.right ?
+           this.getDiagonalBeamId(inter.id, inter.neighbors.bottom, inter.neighbors.right) : undefined
+      };
+      beamPositionId = diagonalIntersections[quadrant];
+    }
+
+    return {
+      id: `arc_${inter.id}_${quadrant}`,
+      intersectionId: inter.id,
+      quadrant,
+      radius,
+      center: { x: ox, y: oy },
+      tangentPoints: [t1, t2],
+      points,
+      beam_position_id: beamPositionId
+    };
+  }
+
+  /**
+   * 获取对角梁位ID
+   * 根据三个交点确定唯一的梁位
+   */
+  private getDiagonalBeamId(currentId: string, neighbor1: string, neighbor2: string): string | undefined {
+    // 使用三个交点ID生成唯一的梁位标识
+    // 梁位的四个角交点按顺序排列
+    const ids = [currentId, neighbor1, neighbor2].sort();
+    return `beam_${ids[0]}_${ids[1]}_${ids[2]}`;
+  }
+
+  /**
+   * 为所有路口生成转弯圆弧
+   */
+  generateAllTurnArcs(
+    intersections: Intersection[],
+    radius: number = this.DEFAULT_RADIUS
+  ): TurnArc[] {
+    const allArcs: TurnArc[] = [];
+
+    for (const inter of intersections) {
+      const arcs = this.generateTurnArcsForIntersection(inter, radius);
+      allArcs.push(...arcs);
+    }
+
+    return allArcs;
+  }
+}
+
+/**
+ * 梁位处理器（V4.0新增）
+ * 实现梁位邻居关系计算和圆弧关联
+ */
+export class BeamPositionProcessor {
+  /**
+   * 计算梁位的邻居关系
+   */
+  calculateBeamNeighbors(beamPositions: BeamPosition[]): Map<string, BeamPosition['neighbors']> {
+    const neighborsMap = new Map<string, BeamPosition['neighbors']>();
+
+    // 建立坐标到梁位的索引
+    const byRowCol = new Map<string, BeamPosition>();
+    for (const beam of beamPositions) {
+      const key = `${beam.row}_${beam.col}`;
+      byRowCol.set(key, beam);
+    }
+
+    // 计算每个梁位的邻居
+    for (const beam of beamPositions) {
+      const neighbors: BeamPosition['neighbors'] = {};
+
+      // 同行左侧
+      const leftKey = `${beam.row}_${beam.col - 1}`;
+      const leftBeam = byRowCol.get(leftKey);
+      if (leftBeam) neighbors.left = leftBeam.id;
+
+      // 同行右侧
+      const rightKey = `${beam.row}_${beam.col + 1}`;
+      const rightBeam = byRowCol.get(rightKey);
+      if (rightBeam) neighbors.right = rightBeam.id;
+
+      // 上一行同列
+      const prevRow = String.fromCharCode(beam.row.charCodeAt(0) - 1);
+      const topKey = `${prevRow}_${beam.col}`;
+      const topBeam = byRowCol.get(topKey);
+      if (topBeam) neighbors.top = topBeam.id;
+
+      // 下一行同列
+      const nextRow = String.fromCharCode(beam.row.charCodeAt(0) + 1);
+      const bottomKey = `${nextRow}_${beam.col}`;
+      const bottomBeam = byRowCol.get(bottomKey);
+      if (bottomBeam) neighbors.bottom = bottomBeam.id;
+
+      neighborsMap.set(beam.id, neighbors);
+    }
+
+    return neighborsMap;
+  }
+
+  /**
+   * 将圆弧关联到梁位
+   */
+  associateArcsWithBeams(
+    arcs: TurnArc[],
+    beamPositions: BeamPosition[],
+    intersections: Intersection[]
+  ): TurnArc[] {
+    // 建立交点到梁位的映射
+    const intersectionToBeams = new Map<string, string[]>();
+
+    for (const beam of beamPositions) {
+      const cornerIds = beam.corner_intersections || beam.crossPoints || [];
+      for (const interId of cornerIds) {
+        const list = intersectionToBeams.get(interId) || [];
+        list.push(beam.id);
+        intersectionToBeams.set(interId, list);
+      }
+    }
+
+    // 为每个圆弧关联梁位
+    return arcs.map(arc => {
+      const inter = intersections.find(i => i.id === arc.intersectionId);
+      if (!inter || !inter.valid_quadrants) {
+        return arc;
+      }
+
+      // 根据象限找到对应的梁位
+      const beamId = this.findBeamForQuadrant(inter, arc.quadrant, beamPositions);
+      if (beamId) {
+        return { ...arc, beam_position_id: beamId };
+      }
+
+      return arc;
+    });
+  }
+
+  /**
+   * 根据象限找到对应的梁位
+   */
+  private findBeamForQuadrant(
+    inter: Intersection,
+    quadrant: number,
+    beamPositions: BeamPosition[]
+  ): string | undefined {
+    // 象限与对角交点的对应关系
+    const diagonalMap: Record<number, { neighbor1: keyof Intersection['neighbors']; neighbor2: keyof Intersection['neighbors'] }> = {
+      0: { neighbor1: 'top', neighbor2: 'right' },
+      1: { neighbor1: 'top', neighbor2: 'left' },
+      2: { neighbor1: 'bottom', neighbor2: 'left' },
+      3: { neighbor1: 'bottom', neighbor2: 'right' }
+    };
+
+    const diagonal = diagonalMap[quadrant];
+    if (!diagonal || !inter.neighbors) return undefined;
+
+    const neighbor1Id = inter.neighbors[diagonal.neighbor1];
+    const neighbor2Id = inter.neighbors[diagonal.neighbor2];
+
+    if (!neighbor1Id || !neighbor2Id) return undefined;
+
+    // 查找包含这三个交点的梁位
+    const cornerIds = [inter.id, neighbor1Id, neighbor2Id];
+    for (const beam of beamPositions) {
+      const beamCorners = beam.corner_intersections || beam.crossPoints || [];
+      if (cornerIds.every(id => beamCorners.includes(id))) {
+        return beam.id;
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * 完善梁位信息：添加邻居关系和扩展边界
+   */
+  processBeamPositions(
+    beamPositions: BeamPosition[],
+    arcs: TurnArc[]
+  ): BeamPosition[] {
+    const neighborsMap = this.calculateBeamNeighbors(beamPositions);
+
+    return beamPositions.map(beam => {
+      const neighbors = neighborsMap.get(beam.id) || {};
+
+      // 转换边界格式
+      const boundaries = { ...beam.boundaries };
+
+      return {
+        ...beam,
+        boundaries,
+        neighbors,
+        corner_intersections: beam.corner_intersections || beam.crossPoints || []
+      };
+    });
+  }
+}
+
 // 导出所有服务
 export default {
   CoordinateService,
@@ -3251,5 +4242,9 @@ export default {
   BeamPositionGenerator,
   TurnPathGenerator,
   MapFileGenerator,
-  SprayModeDecider
+  SprayModeDecider,
+  GPSRoadProcessor,
+  IntersectionProcessor,
+  TurnArcGeneratorV4,
+  BeamPositionProcessor
 };

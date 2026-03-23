@@ -18,7 +18,12 @@ import {
   BeamPositionGenerator,
   TurnPathGenerator,
   MapFileGenerator,
-  SprayModeDecider
+  SprayModeDecider,
+  GPSRoadProcessor,
+  IntersectionProcessor,
+  TurnArcGeneratorV4,
+  BeamPositionProcessor,
+  FittedLine
 } from '../services/gpsMappingService';
 import rosbridgeService from '../services/rosbridgeService';
 import fs from 'fs';
@@ -773,46 +778,155 @@ export const generateMapFiles = async (req: Request, res: Response) => {
       });
     }
 
-    // 生成转弯路径（保留兼容）
-    session.turnPaths = turnPathGenerator.generateTurnPaths(
-      session.intersections,
-      session.roads
-    );
-    
-    // 生成转弯圆弧（V3.2优化 - 圆弧位于路口内侧）
-    const allTurnArcs: any[] = [];
-    for (const intersection of session.intersections) {
-      const arcs = mapFileGenerator.generateTurnArcs(
-        intersection, 
-        session.roads, 
-        4.5, // 默认转弯半径
-        0.2, // 默认点间距
-        session.intersections // 传入所有路口用于计算相对位置
-      );
-      allTurnArcs.push(...arcs);
+    session.status = 'generating';
+    console.log('[GPS建图V4.0] 开始处理GPS道路数据...');
+
+    // ========== 阶段一：GPS道路数据处理 ==========
+    const roadProcessor = new GPSRoadProcessor();
+
+    // 1. 识别道路主方向
+    console.log('[GPS建图V4.0] 步骤1: 识别道路主方向...');
+    const { longitudinalAngle, horizontalAngle } = roadProcessor.identifyRoadDirections(session.roads);
+    console.log(`[GPS建图V4.0] 纵向路主方向: ${(longitudinalAngle * 180 / Math.PI).toFixed(1)}°`);
+    console.log(`[GPS建图V4.0] 横向路主方向: ${(horizontalAngle * 180 / Math.PI).toFixed(1)}°`);
+
+    // 2. 处理每条道路：剔除异常点、拟合、重采样
+    console.log('[GPS建图V4.0] 步骤2: 处理道路数据（剔除异常点、拟合、重采样）...');
+    const processedRoads: Road[] = [];
+    const fittedLines: Map<string, FittedLine> = new Map();
+
+    for (const road of session.roads) {
+      const mainAngle = road.type === 'longitudinal' ? longitudinalAngle : horizontalAngle;
+      try {
+        const { fittedLine, resampledPoints } = roadProcessor.processRoad(road, mainAngle, coordinateService);
+        fittedLines.set(road.id, fittedLine);
+        
+        processedRoads.push({
+          ...road,
+          points: resampledPoints
+        });
+        console.log(`[GPS建图V4.0] 道路 ${road.name}: ${road.points.length}点 -> ${resampledPoints.length}点 (拟合长度: ${fittedLine.length().toFixed(1)}m)`);
+      } catch (err) {
+        console.warn(`[GPS建图V4.0] 道路 ${road.name} 处理失败:`, err);
+        processedRoads.push(road); // 保留原始数据
+      }
     }
-    session.turnArcs = allTurnArcs;
+    session.roads = processedRoads;
+
+    // ========== 阶段二：路口检测与处理 ==========
+    console.log('[GPS建图V4.0] 步骤3: 检测路口交点...');
     
-    // 生成直行线路（V3.0新增）
-    const allStraightPaths: any[] = [];
-    for (const intersection of session.intersections) {
+    // 重新检测路口（使用处理后的道路）
+    const newIntersections = intersectionDetector.detectIntersections(processedRoads);
+    
+    // 为每个路口添加road_v_id和road_h_id
+    const intersectionsWithRoadIds: Intersection[] = newIntersections.map(inter => {
+      // 根据连接的道路确定纵向路和横向路
+      const connectedRoads = processedRoads.filter(r => inter.connectedRoads.includes(r.id));
+      const roadV = connectedRoads.find(r => r.type === 'longitudinal');
+      const roadH = connectedRoads.find(r => r.type === 'horizontal');
+      
+      return {
+        ...inter,
+        road_v_id: roadV?.id,
+        road_h_id: roadH?.id
+      };
+    });
+
+    // 3. 边缘路口处理
+    console.log('[GPS建图V4.0] 步骤4: 处理边缘路口...');
+    const tolerance = 1.5;
+    let edgeProcessed = 0;
+
+    for (const inter of intersectionsWithRoadIds) {
+      if (!inter.road_v_id || !inter.road_h_id) continue;
+      
+      const lineV = fittedLines.get(inter.road_v_id);
+      const lineH = fittedLines.get(inter.road_h_id);
+      
+      if (!lineV || !lineH) continue;
+      
+      const result = roadProcessor.isEdgeIntersection(lineV, lineH, inter.center.mapXy, tolerance);
+      
+      if (result.isEdge) {
+        edgeProcessed++;
+        console.log(`[GPS建图V4.0] 边缘路口 ${inter.id}: 纵向路${result.vStatus}, 横向路${result.hStatus}`);
+        // 可以在这里更新道路端点
+      }
+    }
+    console.log(`[GPS建图V4.0] 共处理 ${edgeProcessed} 个边缘路口`);
+
+    // ========== 阶段三：路口索引构建与象限有效性判断 ==========
+    console.log('[GPS建图V4.0] 步骤5: 构建路口索引和判断象限有效性...');
+    const intersectionProcessor = new IntersectionProcessor();
+    
+    // 处理所有路口：添加邻居和有效象限
+    const processedIntersections = intersectionProcessor.processIntersections(
+      intersectionsWithRoadIds,
+      processedRoads
+    );
+    session.intersections = processedIntersections;
+
+    // 统计路口类型
+    const typeStats: Record<string, number> = {};
+    for (const inter of processedIntersections) {
+      const type = inter.type || 'unknown';
+      typeStats[type] = (typeStats[type] || 0) + 1;
+    }
+    console.log('[GPS建图V4.0] 路口类型统计:', typeStats);
+
+    // ========== 阶段四：圆弧生成（V4.0重构） ==========
+    console.log('[GPS建图V4.0] 步骤6: 生成转弯圆弧...');
+    const arcGenerator = new TurnArcGeneratorV4(coordinateService);
+    const allTurnArcs = arcGenerator.generateAllTurnArcs(processedIntersections);
+    session.turnArcs = allTurnArcs;
+    console.log(`[GPS建图V4.0] 生成 ${allTurnArcs.length} 条转弯圆弧`);
+
+    // 生成直行线路（保留原有逻辑）
+    const allStraightPaths: StraightPath[] = [];
+    for (const intersection of processedIntersections) {
       const sp = mapFileGenerator.generateStraightPaths(
         intersection,
-        session.roads,
+        processedRoads,
         allTurnArcs.filter(a => a.intersectionId === intersection.id)
       );
       allStraightPaths.push(...sp);
     }
     session.straightPaths = allStraightPaths;
 
-    session.status = 'generating';
+    // 生成转弯路径（保留兼容）
+    session.turnPaths = turnPathGenerator.generateTurnPaths(
+      processedIntersections,
+      processedRoads
+    );
+
+    // ========== 阶段五：梁位处理 ==========
+    console.log('[GPS建图V4.0] 步骤7: 处理梁位信息...');
+    const beamProcessor = new BeamPositionProcessor();
+    
+    // 处理梁位：添加邻居关系
+    const processedBeamPositions = beamProcessor.processBeamPositions(
+      session.beamPositions,
+      allTurnArcs
+    );
+    
+    // 关联圆弧与梁位
+    session.turnArcs = beamProcessor.associateArcsWithBeams(
+      allTurnArcs,
+      processedBeamPositions,
+      processedIntersections
+    );
+    session.beamPositions = processedBeamPositions;
+
+    // ========== 阶段六：文件生成 ==========
+    console.log('[GPS建图V4.0] 步骤8: 生成地图文件...');
 
     // 生成PGM地图（使用膨胀法）
     const pgmResult = mapFileGenerator.generatePGMMap(
-      session.roads,
-      session.intersections,
-      session.beamPositions,
-      allTurnArcs,
+      processedRoads,
+      processedIntersections,
+      processedBeamPositions,
+      session.turnArcs,
       allStraightPaths,
       0.05 // 5cm分辨率
     );
@@ -824,18 +938,18 @@ export const generateMapFiles = async (req: Request, res: Response) => {
       pgmResult.origin
     );
 
-    // 生成gps_routes.json（V3.0版本）
+    // 生成gps_routes.json（V4.0版本）
     const gpsRoutesJSON = mapFileGenerator.generateGPSRoutesJSON(
       session.origin,
-      session.roads,
-      session.intersections,
-      allTurnArcs,
+      processedRoads,
+      processedIntersections,
+      session.turnArcs,
       allStraightPaths
     );
 
     // 生成beam_positions.json
     const beamPositionsJSON = mapFileGenerator.generateBeamPositionsJSON(
-      session.beamPositions
+      processedBeamPositions
     );
 
     // 保存文件
@@ -856,17 +970,6 @@ export const generateMapFiles = async (req: Request, res: Response) => {
     );
 
     // 保存GPS原点配置
-    const gpsOriginConfig = {
-      origin: {
-        map_origin: { x: 0, y: 0, theta: session.origin.rotation },
-        gps_origin: {
-          latitude: session.origin.gps.latitude,
-          longitude: session.origin.gps.longitude,
-          altitude: session.origin.gps.altitude
-        },
-        utm_zone: session.origin.utm.zone
-      }
-    };
     fs.writeFileSync(
       path.join(mapsDir, 'gps_origin.yaml'),
       `# GPS原点配置\norigin:\n  map_origin:\n    x: 0.0\n    y: 0.0\n    theta: ${session.origin.rotation}\n  gps_origin:\n    latitude: ${session.origin.gps.latitude}\n    longitude: ${session.origin.gps.longitude}\n    altitude: ${session.origin.gps.altitude}\n  utm_zone: ${session.origin.utm.zone}\n`
@@ -875,6 +978,8 @@ export const generateMapFiles = async (req: Request, res: Response) => {
     session.status = 'completed';
     session.lastUpdateTime = Date.now();
 
+    console.log('[GPS建图V4.0] 地图文件生成完成！');
+
     res.json({
       success: true,
       message: '地图文件生成完成',
@@ -882,8 +987,8 @@ export const generateMapFiles = async (req: Request, res: Response) => {
         files: [
           { name: 'beam_field_map.pgm', size: pgmResult.pgm.length },
           { name: 'beam_field_map.yaml', size: yamlConfig.length },
-          { name: 'gps_routes.json', roads: session.roads.length, intersections: session.intersections.length },
-          { name: 'beam_positions.json', beamPositions: session.beamPositions.length },
+          { name: 'gps_routes.json', roads: processedRoads.length, intersections: processedIntersections.length },
+          { name: 'beam_positions.json', beamPositions: processedBeamPositions.length },
           { name: 'gps_origin.yaml' }
         ],
         mapInfo: {
@@ -891,6 +996,14 @@ export const generateMapFiles = async (req: Request, res: Response) => {
           height: pgmResult.height,
           resolution: 0.05,
           origin: pgmResult.origin
+        },
+        statistics: {
+          roadDirections: {
+            longitudinalAngle: longitudinalAngle * 180 / Math.PI,
+            horizontalAngle: horizontalAngle * 180 / Math.PI
+          },
+          intersectionTypes: typeStats,
+          totalTurnArcs: allTurnArcs.length
         }
       }
     });
