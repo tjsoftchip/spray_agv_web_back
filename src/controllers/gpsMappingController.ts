@@ -11,19 +11,18 @@
  */
 
 import { Request, Response } from 'express';
-import GPSMap, { Road, Intersection, TurnPath, TurnArc, StraightPath, BeamPosition, GPSPoint, MapPoint } from '../models/GPSMap';
+import GPSMap, { Road, Intersection, TurnPath, TurnArc, BeamPosition, GPSPoint, MapPoint } from '../models/GPSMap';
 import {
   CoordinateService,
   IntersectionDetector,
   BeamPositionGenerator,
-  TurnPathGenerator,
   MapFileGenerator,
-  SprayModeDecider,
   GPSRoadProcessor,
   IntersectionProcessor,
   TurnArcGeneratorV4,
   BeamPositionProcessor,
-  FittedLine
+  FittedLine,
+  GPSOrigin
 } from '../services/gpsMappingService';
 import rosbridgeService from '../services/rosbridgeService';
 import fs from 'fs';
@@ -48,7 +47,6 @@ interface MappingSession {
   intersections: Intersection[];
   turnPaths: TurnPath[];          // 旧版转弯路径（保留兼容）
   turnArcs: TurnArc[];            // V3.0新增：转弯圆弧
-  straightPaths: StraightPath[];  // V3.0新增：直行线路
   beamPositions: BeamPosition[];
   recordingStartTime: number | null;
   lastUpdateTime: number;
@@ -60,9 +58,7 @@ let currentSession: MappingSession | null = null;
 // 服务实例
 let coordinateService: CoordinateService | null = null;
 const intersectionDetector = new IntersectionDetector(5.0);
-const turnPathGenerator = new TurnPathGenerator(4.5);
 let mapFileGenerator: MapFileGenerator | null = null;
-const sprayModeDecider = new SprayModeDecider();
 
 // 获取或创建建图会话
 function getOrCreateSession(): MappingSession {
@@ -78,7 +74,6 @@ function getOrCreateSession(): MappingSession {
       intersections: [],
       turnPaths: [],
       turnArcs: [],
-      straightPaths: [],
       beamPositions: [],
       recordingStartTime: null,
       lastUpdateTime: Date.now()
@@ -89,7 +84,13 @@ function getOrCreateSession(): MappingSession {
 
 // 初始化坐标服务
 function initCoordinateService(origin: { latitude: number; longitude: number; rotation: number }) {
-  coordinateService = new CoordinateService(origin);
+  // 创建CoordinateService需要的GPSOrigin格式
+  const gpsOrigin: GPSOrigin = {
+    gps: { lat: origin.latitude, lon: origin.longitude },
+    utm: { zone: 50, easting: 0, northing: 0 }, // 临时值，后续会更新
+    rotation: origin.rotation
+  };
+  coordinateService = new CoordinateService(gpsOrigin);
   mapFileGenerator = new MapFileGenerator(coordinateService);
 }
 
@@ -564,23 +565,13 @@ export const generateIntersections = async (req: Request, res: Response) => {
     // 自动检测交叉点（使用改进的算法）
     session.intersections = intersectionDetector.detectIntersections(session.roads);
     
-    // 自动生成转弯路线
-    if (session.intersections.length > 0) {
-      session.turnPaths = turnPathGenerator.generateTurnPaths(
-        session.intersections,
-        session.roads
-      );
-      console.log(`[GPS建图] 已自动生成 ${session.turnPaths.length} 条转弯路线`);
-    }
-    
     session.lastUpdateTime = Date.now();
 
     res.json({
       success: true,
-      message: `已识别 ${session.intersections.length} 个交叉点，生成 ${session.turnPaths.length} 条转弯路线`,
+      message: `已识别 ${session.intersections.length} 个交叉点`,
       data: {
-        intersections: session.intersections,
-        turnPaths: session.turnPaths
+        intersections: session.intersections
       }
     });
   } catch (error) {
@@ -882,24 +873,6 @@ export const generateMapFiles = async (req: Request, res: Response) => {
     session.turnArcs = allTurnArcs;
     console.log(`[GPS建图V4.0] 生成 ${allTurnArcs.length} 条转弯圆弧`);
 
-    // 生成直行线路（保留原有逻辑）
-    const allStraightPaths: StraightPath[] = [];
-    for (const intersection of processedIntersections) {
-      const sp = mapFileGenerator.generateStraightPaths(
-        intersection,
-        processedRoads,
-        allTurnArcs.filter(a => a.intersectionId === intersection.id)
-      );
-      allStraightPaths.push(...sp);
-    }
-    session.straightPaths = allStraightPaths;
-
-    // 生成转弯路径（保留兼容）
-    session.turnPaths = turnPathGenerator.generateTurnPaths(
-      processedIntersections,
-      processedRoads
-    );
-
     // ========== 阶段五：梁位处理 ==========
     console.log('[GPS建图V4.0] 步骤7: 处理梁位信息...');
     const beamProcessor = new BeamPositionProcessor();
@@ -927,7 +900,6 @@ export const generateMapFiles = async (req: Request, res: Response) => {
       processedIntersections,
       processedBeamPositions,
       session.turnArcs,
-      allStraightPaths,
       0.05 // 5cm分辨率
     );
 
@@ -943,8 +915,7 @@ export const generateMapFiles = async (req: Request, res: Response) => {
       session.origin,
       processedRoads,
       processedIntersections,
-      session.turnArcs,
-      allStraightPaths
+      session.turnArcs
     );
 
     // 生成beam_positions.json
@@ -1029,14 +1000,11 @@ export const getMappingStatus = async (req: Request, res: Response) => {
         hasOrigin: !!session.origin,
         roadCount: session.roads.length,
         intersectionCount: session.intersections.length,
-        turnArcCount: session.turnArcs.length,       // V3.0新增
-        straightPathCount: session.straightPaths.length,  // V3.0新增
+        turnArcCount: session.turnArcs.length,
         beamPositionCount: session.beamPositions.length,
         currentRoadId: session.currentRoadId,
         lastUpdateTime: session.lastUpdateTime,
-        // V3.0新增：直接返回turnArcs和straightPaths数据
-        turnArcs: session.turnArcs,
-        straightPaths: session.straightPaths
+        turnArcs: session.turnArcs
       }
     });
   } catch (error) {
@@ -1092,7 +1060,6 @@ export const saveMappingToDatabase = async (req: Request, res: Response) => {
       intersections: session.intersections,
       turnPaths: session.turnPaths,
       turnArcs: session.turnArcs,
-      straightPaths: session.straightPaths,
       beamPositions: session.beamPositions,
       status: session.status === 'completed' ? 'completed' : 'draft'
     });
@@ -1140,7 +1107,6 @@ export const loadMappingFromDatabase = async (req: Request, res: Response) => {
       intersections: gpsMap.intersections,
       turnPaths: gpsMap.turnPaths || [],
       turnArcs: (gpsMap as any).turnArcs || [],
-      straightPaths: (gpsMap as any).straightPaths || [],
       beamPositions: gpsMap.beamPositions,
       recordingStartTime: null,
       lastUpdateTime: Date.now()

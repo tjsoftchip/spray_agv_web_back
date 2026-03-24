@@ -49,7 +49,7 @@ export interface IntersectionNeighbors {
 // 交叉点数据（V4.0扩展）
 export interface Intersection {
   id: string;
-  type: 'cross' | 't_junction' | 'corner' | 'L' | 'T' | 'partial_1' | 'partial_2' | 'partial_3'; // 路口类型
+  type: 'cross' | 't_junction' | 'corner' | 'L' | 'T' | 'partial_0' | 'partial_1' | 'partial_2' | 'partial_3'; // 路口类型
   center: {
     gps: GPSPoint;
     mapXy: MapPoint;
@@ -93,21 +93,6 @@ export interface TurnArc {
   tangentPoints: MapPoint[];  // 切点位置
   points: TurnArcPoint[];     // 圆弧路径点
   beam_position_id?: string;  // 关联的梁位ID（V4.0新增）
-}
-
-// 直行线路点
-export interface StraightPathPoint {
-  seq: number;
-  gps: GPSPoint;
-  mapXy: MapPoint;
-}
-
-// 直行线路（V3.0新增）
-export interface StraightPath {
-  id: string;
-  intersectionId: string;
-  roadId: string;
-  points: StraightPathPoint[];
 }
 
 // 地图统计信息
@@ -169,7 +154,6 @@ export interface GPSMapAttributes {
   intersections: Intersection[];
   turnPaths: TurnPath[];      // 旧版转弯路径（保留兼容）
   turnArcs?: TurnArc[];       // V3.0新增：转弯圆弧
-  straightPaths?: StraightPath[];  // V3.0新增：直行线路
   beamPositions: BeamPosition[];
   statistics?: MapStatistics;  // V3.0新增：地图统计信息
   status: 'draft' | 'completed' | 'archived';
@@ -178,7 +162,7 @@ export interface GPSMapAttributes {
 }
 
 // 创建时可省略的字段
-type GPSMapCreationAttributes = Optional<GPSMapAttributes, 'id' | 'createdAt' | 'updatedAt' | 'description' | 'supplyStation' | 'roads' | 'intersections' | 'turnPaths' | 'turnArcs' | 'straightPaths' | 'beamPositions' | 'statistics' | 'status'>;
+type GPSMapCreationAttributes = Optional<GPSMapAttributes, 'id' | 'createdAt' | 'updatedAt' | 'description' | 'supplyStation' | 'roads' | 'intersections' | 'turnPaths' | 'turnArcs' | 'beamPositions' | 'statistics' | 'status'>;
 
 // GPS地图模型
 class GPSMap extends Model<GPSMapAttributes, GPSMapCreationAttributes> implements GPSMapAttributes {
@@ -191,7 +175,6 @@ class GPSMap extends Model<GPSMapAttributes, GPSMapCreationAttributes> implement
   declare intersections: Intersection[];
   declare turnPaths: TurnPath[];
   declare turnArcs?: TurnArc[];
-  declare straightPaths?: StraightPath[];
   declare beamPositions: BeamPosition[];
   declare statistics?: MapStatistics;
   declare status: 'draft' | 'completed' | 'archived';
@@ -235,10 +218,6 @@ GPSMap.init(
       defaultValue: [],
     },
     turnArcs: {
-      type: DataTypes.JSON,
-      defaultValue: [],
-    },
-    straightPaths: {
       type: DataTypes.JSON,
       defaultValue: [],
     },

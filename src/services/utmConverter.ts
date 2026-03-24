@@ -250,9 +250,40 @@ export class UTMConverter {
      * 将UTM坐标转换为GPS坐标（简化接口）
      */
     public toLatLon(utm: { zone: number; easting: number; northing: number }): { latitude: number; longitude: number; altitude: number } {
-      // 根据纬度确定zone letter
-      const approxLat = (utm.northing - 10000000) / 111000; // 粗略估计
-      const zoneLetter = this.getUTMLetterDesignator(approxLat);
+      // 正确估计纬度：
+      // 北半球：northing 是从赤道开始的距离（米）
+      // 南半球：northing 是从南极开始的距离 - 10,000,000 米的偏移
+      // 判断方法：如果 northing < 0 或者在南半球区域，使用 false northing
+      
+      // 对于北半球（中国天津在北半球，zone 50），northing 直接代表从赤道的距离
+      // 纬度 ≈ northing / 111000（每度纬度约111公里）
+      let approxLat: number;
+      let zoneLetter: string;
+      
+      // 根据UTM规范，南半球的 northing 会有 false northing (10,000,000m)
+      // 北半球的 northing 从赤道开始计算
+      // 中国天津纬度约39度，northing 约 4,321,423 米
+      // 如果 northing 在合理范围内（0-10,000,000），假设为北半球
+      if (utm.northing >= 0 && utm.northing < 10000000) {
+        // 北半球
+        approxLat = utm.northing / 111000;
+        zoneLetter = this.getUTMLetterDesignator(approxLat);
+      } else if (utm.northing >= 10000000) {
+        // 可能是南半球的 false northing，或者高纬度北半球
+        // 尝试北半球解释
+        approxLat = utm.northing / 111000;
+        if (approxLat <= 84) {
+          zoneLetter = this.getUTMLetterDesignator(approxLat);
+        } else {
+          // 超出正常范围，使用南半球解释
+          approxLat = (utm.northing - 10000000) / 111000;
+          zoneLetter = this.getUTMLetterDesignator(approxLat);
+        }
+      } else {
+        // 负值，南半球
+        approxLat = (utm.northing + 10000000) / 111000;
+        zoneLetter = this.getUTMLetterDesignator(approxLat);
+      }
       
       const result = this.utmToLatLon(utm.easting, utm.northing, utm.zone, zoneLetter);
       return {
