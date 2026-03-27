@@ -1,0 +1,13 @@
+{
+  "watch": ["src"],
+  "ext": "ts,json",
+  "ignore": [
+    "maps/**",
+    "data/**",
+    "*.sqlite",
+    "*.log",
+    "../../../yahboomcar_ws/src/yahboomcar_nav/maps/**"
+  ],
+  "exec": "ts-node src/app.ts",
+  "delay": 1000
+}

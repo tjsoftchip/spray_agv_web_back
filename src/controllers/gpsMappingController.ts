@@ -548,6 +548,31 @@ export const deleteBeamPosition = async (req: Request, res: Response) => {
 // 地图文件生成
 // ============================================================
 
+// 后台生成状态
+let generationStatus: {
+  isGenerating: boolean;
+  progress: string;
+  error: string | null;
+  completedAt: number | null;
+  files: any[] | null;
+} = {
+  isGenerating: false,
+  progress: '',
+  error: null,
+  completedAt: null,
+  files: null
+};
+
+export const getGenerationStatus = async (req: Request, res: Response) => {
+  res.json({
+    isGenerating: generationStatus.isGenerating,
+    progress: generationStatus.progress,
+    error: generationStatus.error,
+    completedAt: generationStatus.completedAt,
+    files: generationStatus.files
+  });
+};
+
 export const generateMapFiles = async (req: Request, res: Response) => {
   const session = getOrCreateSession();
   try {
@@ -558,26 +583,53 @@ export const generateMapFiles = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: '没有道路数据' });
     }
 
+    // 检查是否正在生成
+    if (generationStatus.isGenerating) {
+      return res.status(409).json({ success: false, message: '地图正在生成中，请稍候' });
+    }
+
+    // 立即返回响应，后台处理
+    res.json({ success: true, message: '开始生成地图文件...', background: true });
+
+    // 后台生成
+    setImmediate(() => generateMapFilesAsync(session));
+  } catch (error) {
+    console.error('[GPS建图] 启动生成失败:', error);
+    res.status(500).json({ success: false, message: `启动生成失败: ${(error as Error).message}` });
+  }
+};
+
+async function generateMapFilesAsync(session: MappingSession) {
+  generationStatus = { isGenerating: true, progress: '初始化...', error: null, completedAt: null, files: null };
+
+  try {
+    // 检查必要条件
+    if (!session.origin || !coordinateService || !mapFileGenerator) {
+      throw new Error('原点未校准或服务未初始化');
+    }
+
     session.status = 'generating';
     console.log('[GPS建图] 开始生成地图文件...');
 
     // 如果还没有生成过交叉点和圆弧，先生成
     if (session.intersections.length === 0) {
+      generationStatus.progress = '处理道路数据...';
       console.log('[GPS建图] 自动执行道路处理和圆弧生成...');
       if (!roadProcessor || !arcGenerator) {
         console.log('[GPS建图] 初始化服务...');
         initServices({
-          latitude: session.origin.gps.latitude,
-          longitude: session.origin.gps.longitude,
-          rotation: session.origin.rotation
-        }, session.origin.utm);
+          latitude: session.origin!.gps.latitude,
+          longitude: session.origin!.gps.longitude,
+          rotation: session.origin!.rotation
+        }, session.origin!.utm);
       }
 
       console.log('[GPS建图] 处理道路数据...');
-      const { processedRoads, fittedLines, directions } = roadProcessor!.processRoads(session.roads, 0.2);
+      const { processedRoads, fittedLines, directions } = roadProcessor!.processRoads(session.roads, 0.5);
       session.roads = processedRoads;
       session.angles = { longitudinal: directions.longitudinalAngle, horizontal: directions.horizontalAngle };
 
+      generationStatus.progress = '构建交叉点...';
       console.log('[GPS建图] 构建交叉点...');
       const rawIntersections: Intersection[] = [];
       const longitudinalRoads = processedRoads.filter(r => r.type === 'longitudinal');
@@ -603,19 +655,21 @@ export const generateMapFiles = async (req: Request, res: Response) => {
         }
       }
 
+      generationStatus.progress = '处理交叉点和圆弧...';
       console.log('[GPS建图] 处理交叉点和圆弧...');
       session.intersections = intersectionProcessor.processIntersections(rawIntersections, directions.longitudinalAngle, directions.horizontalAngle);
       console.log(`[GPS建图] 交叉点数: ${session.intersections.length}, 有效象限: ${session.intersections.map(i => i.valid_quadrants).join(', ')}`);
-      
+
       session.turnArcs = arcGenerator!.generateAllTurnArcs(session.intersections, directions.longitudinalAngle, directions.horizontalAngle);
       console.log(`[GPS建图] 生成的圆弧数: ${session.turnArcs.length}`);
       session.beamPositions = beamPositionProcessor.generateBeamPositions(session.intersections, processedRoads);
     }
 
-    // 生成JSON文件
+    generationStatus.progress = '生成JSON文件...';
     console.log('[GPS建图] 生成JSON文件...');
-    const gpsRoutesJSON = mapFileGenerator.generateGPSRoutesJSON(session.origin, session.roads, session.intersections, session.turnArcs);
-    const beamPositionsJSON = mapFileGenerator.generateBeamPositionsJSON(session.beamPositions);
+    const origin = session.origin!;
+    const gpsRoutesJSON = mapFileGenerator!.generateGPSRoutesJSON(origin, session.roads, session.intersections, session.turnArcs);
+    const beamPositionsJSON = mapFileGenerator!.generateBeamPositionsJSON(session.beamPositions);
 
     // 保存到导航地图目录
     const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
@@ -624,7 +678,7 @@ export const generateMapFiles = async (req: Request, res: Response) => {
     fs.writeFileSync(path.join(mapsDir, 'gps_routes.json'), JSON.stringify(gpsRoutesJSON, null, 2));
     fs.writeFileSync(path.join(mapsDir, 'beam_positions.json'), JSON.stringify(beamPositionsJSON, null, 2));
 
-    // 生成ROS2参数格式的GPS原点配置（兼容auto_initial_pose节点）
+    // 生成ROS2参数格式的GPS原点配置
     const gpsOriginYaml = `# GPS原点配置 - ROS2参数格式
 # 用于auto_initial_pose节点和route_executor节点
 # 生成时间: ${new Date().toISOString()}
@@ -632,24 +686,24 @@ export const generateMapFiles = async (req: Request, res: Response) => {
 /**:
   ros__parameters:
     # GPS原点坐标 (WGS84)
-    origin_latitude: ${session.origin.gps.latitude}
-    origin_longitude: ${session.origin.gps.longitude}
-    origin_altitude: ${session.origin.gps.altitude || 0}
+    origin_latitude: ${origin.gps.latitude}
+    origin_longitude: ${origin.gps.longitude}
+    origin_altitude: ${origin.gps.altitude || 0}
 
     # 地图旋转角度（弧度）- 道路方向相对于UTM北的角度
-    map_rotation: ${session.origin.rotation || 0}
+    map_rotation: ${origin.rotation || 0}
 
     # UTM分区
-    utm_zone: ${session.origin.utm.zone}
+    utm_zone: ${origin.utm.zone}
 
     # UTM坐标（预计算）
-    origin_easting: ${session.origin.utm.easting}
-    origin_northing: ${session.origin.utm.northing}
+    origin_easting: ${origin.utm.easting}
+    origin_northing: ${origin.utm.northing}
 `;
     fs.writeFileSync(path.join(mapsDir, 'gps_origin.yaml'), gpsOriginYaml);
 
-    // 生成道路网络YAML文件（供route_executor使用）
-    const routesYaml = generateRoutesYaml(session.roads, session.turnArcs, session.origin);
+    // 生成道路网络YAML文件
+    const routesYaml = generateRoutesYaml(session.roads, session.turnArcs, origin);
     fs.writeFileSync(path.join(mapsDir, 'gps_routes.yaml'), routesYaml);
 
     // 保存到web预览目录
@@ -658,10 +712,9 @@ export const generateMapFiles = async (req: Request, res: Response) => {
     fs.writeFileSync(path.join(webMapsDir, 'gps_routes.json'), JSON.stringify(gpsRoutesJSON, null, 2));
     fs.writeFileSync(path.join(webMapsDir, 'beam_positions.json'), JSON.stringify(beamPositionsJSON, null, 2));
 
-    // 从道路参数中提取首选网络宽度和高代价区宽度
-    // 使用第一条道路的参数作为默认值
-    const defaultPreferredWidth = 1.4; // 默认1.4m
-    const defaultHighCostWidth = 0.3;  // 默认0.3m
+    // 提取道路参数
+    const defaultPreferredWidth = 1.4;
+    const defaultHighCostWidth = 0.3;
     let preferredWidth = defaultPreferredWidth;
     let highCostWidth = defaultHighCostWidth;
 
@@ -677,17 +730,19 @@ export const generateMapFiles = async (req: Request, res: Response) => {
     console.log(`[GPS建图] 地图参数: 首选网络宽度=${preferredWidth}m, 高代价区宽度=${highCostWidth}m`);
 
     // 生成PGM地图
+    generationStatus.progress = '生成PGM地图...';
     try {
       console.log('[GPS建图] 生成PGM地图...');
-      const { pgm, width, height, origin } = mapFileGenerator.generatePGMMap(
-        session.roads, session.turnArcs, 0.05, preferredWidth, highCostWidth
+      const { pgm, width, height, origin: mapOrigin } = mapFileGenerator!.generatePGMMap(
+        session.roads, session.turnArcs, 0.1, preferredWidth, highCostWidth
       );
       fs.writeFileSync(path.join(mapsDir, 'beam_field_map.pgm'), pgm);
-      fs.writeFileSync(path.join(mapsDir, 'beam_field_map.yaml'), mapFileGenerator.generateYAMLConfig('beam_field_map.pgm', 0.05, origin));
+      fs.writeFileSync(path.join(mapsDir, 'beam_field_map.yaml'), mapFileGenerator!.generateYAMLConfig('beam_field_map.pgm', 0.1, mapOrigin));
       console.log(`[GPS建图] PGM地图生成成功: ${width}x${height}`);
     } catch (pgmError: any) {
       console.error('[GPS建图] PGM地图生成失败:', pgmError?.message || pgmError);
       console.error(pgmError?.stack);
+      generationStatus.error = `PGM生成失败: ${pgmError?.message}`;
     }
 
     session.status = 'completed';
@@ -704,28 +759,25 @@ export const generateMapFiles = async (req: Request, res: Response) => {
 
     console.log('[GPS建图] 地图文件生成完成！');
 
-    res.json({
-      success: true,
-      message: '地图文件生成完成',
-      data: {
-        files: fileList,
-        stats: {
-          intersections: session.intersections.length,
-          turnArcs: session.turnArcs.length,
-          beamPositions: session.beamPositions.length,
-          angles: session.angles ? {
-            longitudinal: (session.angles.longitudinal * 180 / Math.PI).toFixed(1) + '°',
-            horizontal: (session.angles.horizontal * 180 / Math.PI).toFixed(1) + '°'
-          } : null
-        }
-      }
-    });
+    generationStatus = {
+      isGenerating: false,
+      progress: '完成',
+      error: null,
+      completedAt: Date.now(),
+      files: fileList
+    };
   } catch (error) {
     console.error('[GPS建图] 生成地图文件失败:', error);
     session.status = 'idle';
-    res.status(500).json({ success: false, message: `生成地图文件失败: ${(error as Error).message}` });
+    generationStatus = {
+      isGenerating: false,
+      progress: '失败',
+      error: (error as Error).message,
+      completedAt: Date.now(),
+      files: null
+    };
   }
-};
+}
 
 // ============================================================
 // 生成route_executor使用的YAML路线文件
@@ -918,6 +970,18 @@ export const loadMappingFromDatabase = async (req: Request, res: Response) => {
     const gpsMap = await GPSMap.findByPk(id);
     if (!gpsMap) return res.status(404).json({ success: false, message: '地图不存在' });
 
+    // 解析可能为字符串的字段
+    let turnArcs = (gpsMap as any).turnArcs || [];
+    if (typeof turnArcs === 'string') {
+      try {
+        turnArcs = JSON.parse(turnArcs);
+        console.log('[GPS建图] turnArcs从字符串解析成功, 数量:', turnArcs.length);
+      } catch (e) {
+        console.error('[GPS建图] turnArcs解析失败:', e);
+        turnArcs = [];
+      }
+    }
+
     currentSession = {
       id: `session_loaded_${Date.now()}`,
       status: gpsMap.status as any,
@@ -927,12 +991,17 @@ export const loadMappingFromDatabase = async (req: Request, res: Response) => {
       supplyStation: gpsMap.supplyStation || null,
       roads: gpsMap.roads,
       intersections: gpsMap.intersections,
-      turnArcs: (gpsMap as any).turnArcs || [],
+      turnArcs: turnArcs,
       beamPositions: gpsMap.beamPositions,
       angles: null,
       recordingStartTime: null,
       lastUpdateTime: Date.now()
     };
+
+    console.log('[GPS建图] 加载地图:', gpsMap.name);
+    console.log('[GPS建图] 道路数:', gpsMap.roads?.length || 0);
+    console.log('[GPS建图] 交叉点数:', gpsMap.intersections?.length || 0);
+    console.log('[GPS建图] 圆弧数:', Array.isArray(turnArcs) ? turnArcs.length : 0);
 
     if (gpsMap.origin) {
       initServices({

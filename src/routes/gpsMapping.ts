@@ -30,6 +30,7 @@ router.delete('/beam-positions/:beamId', authenticate, gpsMappingController.dele
 
 // 地图文件生成
 router.post('/generate-files', authenticate, gpsMappingController.generateMapFiles);
+router.get('/generation-status', authenticate, gpsMappingController.getGenerationStatus);
 
 // 建图状态
 router.get('/status', authenticate, gpsMappingController.getMappingStatus);

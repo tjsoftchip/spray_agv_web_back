@@ -520,7 +520,7 @@ export class GPSRoadProcessor {
    */
   processRoads(
     roads: Road[],
-    sampleDistance: number = 0.2
+    sampleDistance: number = 0.5
   ): {
     processedRoads: Road[];
     fittedLines: Map<string, FittedLine>;
@@ -997,7 +997,7 @@ export class MapFileGenerator {
   generatePGMMap(
     roads: Road[],
     turnArcs: TurnArc[],
-    resolution: number = 0.05,
+    resolution: number = 0.1,
     preferredWidth: number = 1.4,
     highCostWidth: number = 0.3,
     margin: number = 5.0
@@ -1081,7 +1081,14 @@ export class MapFileGenerator {
 
     // 生成代价地图
     const costmap = this.generateCostmap(centerlineImg, preferredWidth, highCostWidth, resolution);
+
+    // 释放中心线图像内存
+    centerlineImg.length = 0;
+
     const pgmBuffer = this.createPGMBuffer(costmap);
+
+    // 释放代价地图内存
+    costmap.length = 0;
 
     console.log(`[generatePGMMap] PGM地图生成成功, 大小=${pgmBuffer.length}字节`);
     return { pgm: pgmBuffer, width, height, origin: [minX, minY, 0.0] };
@@ -1107,10 +1114,14 @@ export class MapFileGenerator {
     const h = centerlineImg.length, w = centerlineImg[0]?.length || 0;
     console.log(`[generateCostmap] 开始生成代价地图, 尺寸=${w}x${h}, 首选宽度=${pw}m, 高代价宽度=${hw}m`);
 
-    // 初始化距离地图
-    const distMap: number[][] = [];
+    // 计算最大需要处理的距离（超出此距离的区域直接设为禁区）
+    const maxDist = pw + hw + res; // 额外加res作为缓冲
+    console.log(`[generateCostmap] 最大处理距离: ${maxDist.toFixed(2)}m`);
+
+    // 初始化距离地图，使用null表示未处理（比Infinity更省内存）
+    const distMap: (number | null)[][] = [];
     for (let y = 0; y < h; y++) {
-      distMap.push(new Array(w).fill(Infinity));
+      distMap.push(new Array(w).fill(null));
     }
 
     // 使用简单队列（数组 + 索引，比 shift() 快得多）
@@ -1136,12 +1147,12 @@ export class MapFileGenerator {
       // 返回空白代价地图
       const emptyCostmap: number[][] = [];
       for (let y = 0; y < h; y++) {
-        emptyCostmap.push(new Array(w).fill(255));
+        emptyCostmap.push(new Array(w).fill(254));
       }
       return emptyCostmap;
     }
 
-    // BFS计算距离（使用索引而非shift）
+    // BFS计算距离（使用索引而非shift），带提前终止优化
     const dirs = [0, 1, 0, -1, 1, 0, -1, 0]; // [dx1, dy1, dx2, dy2, ...]
     let processedCount = 0;
 
@@ -1150,7 +1161,12 @@ export class MapFileGenerator {
       const cy = queue[queueHead++];
       processedCount++;
 
-      const currentDist = distMap[cy][cx];
+      const currentDist = distMap[cy][cx] as number;
+
+      // 提前终止：如果当前距离已经超过最大处理距离，跳过扩展
+      if (currentDist >= maxDist) {
+        continue;
+      }
 
       for (let d = 0; d < 4; d++) {
         const nx = cx + dirs[d * 2];
@@ -1158,13 +1174,17 @@ export class MapFileGenerator {
 
         if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
           const nd = currentDist + res;
-          if (nd < distMap[ny][nx]) {
+          const existing = distMap[ny][nx];
+          if (existing === null || nd < existing) {
             distMap[ny][nx] = nd;
             queue.push(nx, ny);
           }
         }
       }
     }
+
+    // 释放队列内存
+    queue.length = 0;
 
     console.log(`[generateCostmap] BFS处理完成, 处理像素数: ${processedCount}`);
 
@@ -1195,7 +1215,11 @@ export class MapFileGenerator {
         const d = distMap[y][x];
         let cost: number;
 
-        if (d <= preferredDistPixels) {
+        // 未处理的像素（距离超过maxDist）直接设为禁区
+        if (d === null) {
+          cost = 254;
+          keepoutPixels++;
+        } else if (d <= preferredDistPixels) {
           // 首选网络区域：距离中心线 <= preferredWidth
           // 灰度值0（黑色），代价最低，机器人优先通行
           cost = 0;
@@ -1218,6 +1242,9 @@ export class MapFileGenerator {
 
     const totalPixels = w * h;
     console.log(`[generateCostmap] 代价地图生成完成: 首选网络=${preferredPixels}像素(${(preferredPixels/totalPixels*100).toFixed(1)}%), 高代价区=${highCostPixels}像素(${(highCostPixels/totalPixels*100).toFixed(1)}%), 禁区=${keepoutPixels}像素(${(keepoutPixels/totalPixels*100).toFixed(1)}%)`);
+
+    // 释放距离地图内存
+    distMap.length = 0;
 
     return costmap;
   }
