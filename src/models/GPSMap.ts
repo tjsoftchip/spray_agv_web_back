@@ -27,9 +27,8 @@ export interface Road {
   name: string;
   type: 'longitudinal' | 'horizontal'; // 纵向/横向
   params: {
-    preferredWidth: number;   // 首选路网宽度 (m)
-    keepoutDistance: number;  // 禁区宽度 (m)
-    channelWidth: number;     // 通道总宽度 (m)
+    preferredWidth: number;   // 首选网络宽度 (m)，默认1.4m
+    highCostWidth: number;    // 高代价区宽度 (m)，默认0.3m
   };
   points: RoadPoint[];
 }

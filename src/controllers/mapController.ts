@@ -595,13 +595,17 @@ export const scanLocalMaps = async (req: Request, res: Response) => {
           } else if (line.startsWith('origin:')) {
             try {
               const originStr = line.split(':')[1].trim();
-              const originArray = JSON.parse(originStr);
-              if (Array.isArray(originArray) && originArray.length >= 2) {
-                mapInfo.origin = {
-                  x: parseFloat(originArray[0]) || 0,
-                  y: parseFloat(originArray[1]) || 0,
-                  z: parseFloat(originArray[2]) || 0
-                };
+              if (!originStr) {
+                mapInfo.origin = { x: 0, y: 0, z: 0 };
+              } else {
+                const originArray = JSON.parse(originStr);
+                if (Array.isArray(originArray) && originArray.length >= 2) {
+                  mapInfo.origin = {
+                    x: parseFloat(originArray[0]) || 0,
+                    y: parseFloat(originArray[1]) || 0,
+                    z: parseFloat(originArray[2]) || 0
+                  };
+                }
               }
             } catch (e) {
               console.error(`Failed to parse origin for ${yamlFile}:`, e);

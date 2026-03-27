@@ -49,8 +49,7 @@ interface Road {
   type: 'longitudinal' | 'horizontal';
   params: {
     preferredWidth: number;
-    keepoutDistance: number;
-    channelWidth: number;
+    highCostWidth: number;
   };
   points: Array<{
     seq: number;
