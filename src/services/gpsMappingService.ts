@@ -275,22 +275,18 @@ export class GPSRoadProcessor {
     const longitudinalData: { road: Road; angle: number }[] = [];
     for (const road of longitudinalRoads) {
       const angle = this.getRoadDirection(road.points);
-      console.log(`[identifyRoadDirections] 纵向路 ${road.name}: 方向角=${angle !== null ? (angle * 180 / Math.PI).toFixed(1) + '°' : 'null'}`);
       if (angle !== null) longitudinalData.push({ road, angle });
     }
 
     const horizontalData: { road: Road; angle: number }[] = [];
     for (const road of horizontalRoads) {
       const angle = this.getRoadDirection(road.points);
-      console.log(`[identifyRoadDirections] 横向路 ${road.name}: 方向角=${angle !== null ? (angle * 180 / Math.PI).toFixed(1) + '°' : 'null'}`);
       if (angle !== null) horizontalData.push({ road, angle });
     }
 
     // 计算初始平均角度
     let longitudinalAngle = circularMean(longitudinalData.length > 0 ? longitudinalData.map(d => d.angle) : [Math.PI / 2]);
     let horizontalAngle = circularMean(horizontalData.length > 0 ? horizontalData.map(d => d.angle) : [0.0]);
-
-    console.log(`[identifyRoadDirections] 初始平均: 纵向=${(longitudinalAngle * 180 / Math.PI).toFixed(1)}°, 横向=${(horizontalAngle * 180 / Math.PI).toFixed(1)}°`);
 
     // 修正反向问题：确保同类道路方向与平均值相近
     // 如果某条道路方向与平均值相差>90°，则翻转180°
@@ -301,10 +297,6 @@ export class GPSRoadProcessor {
       return normalizeAngle(reference + diff);
     };
 
-    // 先检查同类道路之间是否一致（不被初始平均值误导）
-    // 如果所有纵向路方向相近，不需要修正
-    // 如果所有横向路方向相近，也不需要修正
-    
     // 修正纵向路方向
     const correctedLongitudinalAngles: number[] = [];
     const longAngles = longitudinalData.map(d => d.angle);
@@ -315,7 +307,6 @@ export class GPSRoadProcessor {
       if (longStd > Math.PI / 4) {
         corrected = normalizeDirection(angle, longitudinalAngle);
       }
-      console.log(`[identifyRoadDirections] 纵向路 ${road.name} 修正: ${(angle * 180 / Math.PI).toFixed(1)}° -> ${(corrected * 180 / Math.PI).toFixed(1)}° (std=${(longStd * 180 / Math.PI).toFixed(1)}°)`);
       correctedLongitudinalAngles.push(corrected);
     }
     longitudinalAngle = circularMean(correctedLongitudinalAngles);
@@ -330,18 +321,13 @@ export class GPSRoadProcessor {
       if (horzStd > Math.PI / 4) {
         corrected = normalizeDirection(angle, horizontalAngle);
       }
-      console.log(`[identifyRoadDirections] 横向路 ${road.name} 修正: ${(angle * 180 / Math.PI).toFixed(1)}° -> ${(corrected * 180 / Math.PI).toFixed(1)}° (std=${(horzStd * 180 / Math.PI).toFixed(1)}°)`);
       correctedHorizontalAngles.push(corrected);
     }
     horizontalAngle = circularMean(correctedHorizontalAngles);
 
-    console.log(`[identifyRoadDirections] 修正后平均: 纵向=${(longitudinalAngle * 180 / Math.PI).toFixed(1)}°, 横向=${(horizontalAngle * 180 / Math.PI).toFixed(1)}°`);
-
     // 校验垂直性
     const angleDiff = Math.abs(normalizeAngle(longitudinalAngle - horizontalAngle));
-    console.log(`[identifyRoadDirections] 角度差=${(angleDiff * 180 / Math.PI).toFixed(1)}°`);
     if (!(Math.PI / 2 - 0.2 < angleDiff && angleDiff < Math.PI / 2 + 0.2)) {
-      console.log('[identifyRoadDirections] 角度差不在90°附近，强制正交化');
       horizontalAngle = normalizeAngle(longitudinalAngle + Math.PI / 2);
     }
 
@@ -422,12 +408,9 @@ export class GPSRoadProcessor {
   ): { longitudinalAngle: number; horizontalAngle: number } {
     const angleDiff = Math.abs(horizontalAngle - longitudinalAngle);
     const normalizedDiff = Math.abs(normalizeAngle(angleDiff));
-    console.log(`[orthogonalizeRoads] 原始角度差=${(angleDiff * 180 / Math.PI).toFixed(1)}°, 归一化差=${(normalizedDiff * 180 / Math.PI).toFixed(1)}°, π/2=${(Math.PI / 2 * 180 / Math.PI).toFixed(1)}°`);
     if (Math.abs(normalizedDiff - Math.PI / 2) <= tolerance) {
-      console.log('[orthogonalizeRoads] 角度已垂直，保持不变');
       return { longitudinalAngle, horizontalAngle };
     }
-    console.log('[orthogonalizeRoads] 角度不垂直，强制正交化');
     return {
       longitudinalAngle,
       horizontalAngle: normalizeAngle(longitudinalAngle + Math.PI / 2)
@@ -461,8 +444,6 @@ export class GPSRoadProcessor {
     const minProj = Math.min(...projections);
     const maxProj = Math.max(...projections);
 
-    console.log(`[fitRoadWithDirection] 道路 ${road.name}: minProj=${minProj.toFixed(2)}, maxProj=${maxProj.toFixed(2)}, range=${(maxProj - minProj).toFixed(2)}m, centerOffset=${centerOffset.toFixed(2)}`);
-
     const start: Point2D = {
       x: minProj * dx + centerOffset * perpDx,
       y: minProj * dy + centerOffset * perpDy
@@ -473,7 +454,6 @@ export class GPSRoadProcessor {
     };
 
     const line = createFittedLine(start, end, mainAngle, road.id);
-    console.log(`[fitRoadWithDirection] 道路 ${road.name}: 拟合长度=${line.length().toFixed(2)}m`);
     return line;
   }
 
@@ -533,11 +513,9 @@ export class GPSRoadProcessor {
 
     // 识别主方向
     const directions = this.identifyRoadDirections(roads);
-    console.log(`[GPSRoadProcessor] 主方向: 纵向=${(directions.longitudinalAngle * 180 / Math.PI).toFixed(1)}°, 横向=${(directions.horizontalAngle * 180 / Math.PI).toFixed(1)}°`);
 
     // 正交化
     const ortho = this.orthogonalizeRoads(directions.longitudinalAngle, directions.horizontalAngle);
-    console.log(`[GPSRoadProcessor] 正交化后: 纵向=${(ortho.longitudinalAngle * 180 / Math.PI).toFixed(1)}°, 横向=${(ortho.horizontalAngle * 180 / Math.PI).toFixed(1)}°`);
 
     // 拟合道路
     const fittedLines = new Map<string, FittedLine>();
@@ -856,20 +834,9 @@ export class TurnArcGenerator {
 
     for (const inter of intersections) {
       const validQuadrants = inter.valid_quadrants || [];
-      console.log(`[TurnArcGenerator] 路口 ${inter.id}: 有效象限=${validQuadrants.join(', ')}`);
-      
+
       for (const q of validQuadrants) {
         const arc = this.generateArc(inter, q, longitudinalAngle, horizontalAngle, radius);
-        
-        // 检查圆弧是否正确（圆心到两个切点的距离应为radius）
-        const t1 = arc.tangentPoints[0];
-        const t2 = arc.tangentPoints[1];
-        const dist1 = Math.sqrt((t1.x - arc.center.x) ** 2 + (t1.y - arc.center.y) ** 2);
-        const dist2 = Math.sqrt((t2.x - arc.center.x) ** 2 + (t2.y - arc.center.y) ** 2);
-        const distCenter = Math.sqrt((arc.center.x - inter.center.mapXy.x) ** 2 + (arc.center.y - inter.center.mapXy.y) ** 2);
-        
-        console.log(`[TurnArcGenerator] 圆弧 ${arc.id}: 象限=${q}, 半径=${arc.radius.toFixed(2)}m, 切点1到圆心=${dist1.toFixed(2)}m, 切点2到圆心=${dist2.toFixed(2)}m, 圆心到交点=${distCenter.toFixed(2)}m (期望=${(arc.radius * Math.sqrt(2)).toFixed(2)}m)`);
-        
         allArcs.push(arc);
       }
     }
@@ -1002,24 +969,16 @@ export class MapFileGenerator {
     highCostWidth: number = 0.3,
     margin: number = 5.0
   ): { pgm: Buffer; width: number; height: number; origin: number[] } {
-    console.log(`[generatePGMMap] 开始生成PGM地图, 道路数=${roads.length}, 圆弧数=${turnArcs.length}, 分辨率=${resolution}m`);
-
     // 收集所有点
     const allPoints: Point2D[] = [];
     for (const road of roads) {
-      if (!road.points || road.points.length === 0) {
-        console.warn(`[generatePGMMap] 警告: 道路 ${road.id} 没有点数据`);
-        continue;
-      }
+      if (!road.points || road.points.length === 0) continue;
       for (const p of road.points) {
         if (p.mapXy) allPoints.push(p.mapXy);
       }
     }
     for (const arc of turnArcs) {
-      if (!arc.points || arc.points.length === 0) {
-        console.warn(`[generatePGMMap] 警告: 圆弧 ${arc.id} 没有点数据`);
-        continue;
-      }
+      if (!arc.points || arc.points.length === 0) continue;
       for (const p of arc.points) {
         if (p.mapXy) allPoints.push(p.mapXy);
       }
@@ -1029,8 +988,6 @@ export class MapFileGenerator {
       throw new Error(`没有道路点数据: 道路${roads.length}条, 圆弧${turnArcs.length}条, 总点数0`);
     }
 
-    console.log(`[generatePGMMap] 总点数: ${allPoints.length}`);
-
     const minX = Math.min(...allPoints.map(p => p.x)) - margin;
     const maxX = Math.max(...allPoints.map(p => p.x)) + margin;
     const minY = Math.min(...allPoints.map(p => p.y)) - margin;
@@ -1038,8 +995,6 @@ export class MapFileGenerator {
 
     const width = Math.floor((maxX - minX) / resolution) + 1;
     const height = Math.floor((maxY - minY) / resolution) + 1;
-
-    console.log(`[generatePGMMap] 地图尺寸: ${width}x${height}, 范围: X[${minX.toFixed(2)}, ${maxX.toFixed(2)}], Y[${minY.toFixed(2)}, ${maxY.toFixed(2)}]`);
 
     // 检查地图尺寸是否合理
     if (width > 10000 || height > 10000) {
@@ -1049,6 +1004,8 @@ export class MapFileGenerator {
       throw new Error(`地图尺寸过小: ${width}x${height}, 请检查数据`);
     }
 
+    console.log(`[PGM] 生成地图 ${width}x${height}, 道路${roads.length}条, 圆弧${turnArcs.length}条`);
+
     // 创建中心线图像 (0=道路中心线, 255=其他)
     const centerlineImg: number[][] = [];
     for (let y = 0; y < height; y++) {
@@ -1056,13 +1013,11 @@ export class MapFileGenerator {
     }
 
     // 绘制道路中心线
-    let lineCount = 0;
     for (const road of roads) {
       if (!road.points) continue;
       for (let i = 0; i < road.points.length - 1; i++) {
         if (road.points[i].mapXy && road.points[i + 1].mapXy) {
           this.drawLine(centerlineImg, road.points[i].mapXy, road.points[i + 1].mapXy, minX, minY, resolution, 0);
-          lineCount++;
         }
       }
     }
@@ -1072,12 +1027,9 @@ export class MapFileGenerator {
       for (let i = 0; i < arc.points.length - 1; i++) {
         if (arc.points[i].mapXy && arc.points[i + 1].mapXy) {
           this.drawLine(centerlineImg, arc.points[i].mapXy, arc.points[i + 1].mapXy, minX, minY, resolution, 0);
-          lineCount++;
         }
       }
     }
-
-    console.log(`[generatePGMMap] 绘制线段数: ${lineCount}`);
 
     // 生成代价地图
     const costmap = this.generateCostmap(centerlineImg, preferredWidth, highCostWidth, resolution);
@@ -1090,7 +1042,6 @@ export class MapFileGenerator {
     // 释放代价地图内存
     costmap.length = 0;
 
-    console.log(`[generatePGMMap] PGM地图生成成功, 大小=${pgmBuffer.length}字节`);
     return { pgm: pgmBuffer, width, height, origin: [minX, minY, 0.0] };
   }
 
@@ -1112,11 +1063,9 @@ export class MapFileGenerator {
 
   private generateCostmap(centerlineImg: number[][], pw: number, hw: number, res: number): number[][] {
     const h = centerlineImg.length, w = centerlineImg[0]?.length || 0;
-    console.log(`[generateCostmap] 开始生成代价地图, 尺寸=${w}x${h}, 首选宽度=${pw}m, 高代价宽度=${hw}m`);
 
     // 计算最大需要处理的距离（超出此距离的区域直接设为禁区）
     const maxDist = pw + hw + res; // 额外加res作为缓冲
-    console.log(`[generateCostmap] 最大处理距离: ${maxDist.toFixed(2)}m`);
 
     // 初始化距离地图，使用null表示未处理（比Infinity更省内存）
     const distMap: (number | null)[][] = [];
@@ -1140,10 +1089,7 @@ export class MapFileGenerator {
       }
     }
 
-    console.log(`[generateCostmap] 中心线像素数: ${centerlineCount}`);
-
     if (centerlineCount === 0) {
-      console.warn('[generateCostmap] 警告: 没有找到中心线像素');
       // 返回空白代价地图
       const emptyCostmap: number[][] = [];
       for (let y = 0; y < h; y++) {
@@ -1154,12 +1100,10 @@ export class MapFileGenerator {
 
     // BFS计算距离（使用索引而非shift），带提前终止优化
     const dirs = [0, 1, 0, -1, 1, 0, -1, 0]; // [dx1, dy1, dx2, dy2, ...]
-    let processedCount = 0;
 
     while (queueHead < queue.length) {
       const cx = queue[queueHead++];
       const cy = queue[queueHead++];
-      processedCount++;
 
       const currentDist = distMap[cy][cx] as number;
 
@@ -1186,8 +1130,6 @@ export class MapFileGenerator {
     // 释放队列内存
     queue.length = 0;
 
-    console.log(`[generateCostmap] BFS处理完成, 处理像素数: ${processedCount}`);
-
     // 生成代价地图
     // Nav2 scale模式配合 negate: 1（反向模式）:
     // 灰度值直接映射到代价
@@ -1201,13 +1143,10 @@ export class MapFileGenerator {
     // - 高代价区（首选网络外highCostWidth米）：灰度值100，可通行但不推荐
     // - 禁区（超出高代价区）：灰度值254，不可通行
     const costmap: number[][] = [];
-    let preferredPixels = 0, highCostPixels = 0, keepoutPixels = 0;
 
     // 计算像素距离阈值
     const preferredDistPixels = pw; // preferredWidth (米)
     const highCostDistPixels = pw + hw; // preferredWidth + highCostWidth (米)
-
-    console.log(`[generateCostmap] 距离阈值: 首选网络<=${preferredDistPixels.toFixed(2)}m, 高代价区<=${highCostDistPixels.toFixed(2)}m`);
 
     for (let y = 0; y < h; y++) {
       const row: number[] = [];
@@ -1218,30 +1157,23 @@ export class MapFileGenerator {
         // 未处理的像素（距离超过maxDist）直接设为禁区
         if (d === null) {
           cost = 254;
-          keepoutPixels++;
         } else if (d <= preferredDistPixels) {
           // 首选网络区域：距离中心线 <= preferredWidth
           // 灰度值0（黑色），代价最低，机器人优先通行
           cost = 0;
-          preferredPixels++;
         } else if (d <= highCostDistPixels) {
           // 高代价区：距离中心线在 preferredWidth 到 preferredWidth + highCostWidth 之间
           // 灰度值100（灰色），可通行但不推荐
           cost = 100;
-          highCostPixels++;
         } else {
           // 禁区：距离太远，设置为致命障碍物
           // 灰度值254（接近白色），不可通行
           cost = 254;
-          keepoutPixels++;
         }
         row.push(cost);
       }
       costmap.push(row);
     }
-
-    const totalPixels = w * h;
-    console.log(`[generateCostmap] 代价地图生成完成: 首选网络=${preferredPixels}像素(${(preferredPixels/totalPixels*100).toFixed(1)}%), 高代价区=${highCostPixels}像素(${(highCostPixels/totalPixels*100).toFixed(1)}%), 禁区=${keepoutPixels}像素(${(keepoutPixels/totalPixels*100).toFixed(1)}%)`);
 
     // 释放距离地图内存
     distMap.length = 0;
@@ -1258,8 +1190,6 @@ export class MapFileGenerator {
     if (w === 0) {
       throw new Error('图像宽度为0');
     }
-
-    console.log(`[createPGMBuffer] 创建PGM缓冲区, 尺寸=${w}x${h}`);
 
     const header = `P5\n${w} ${h}\n255\n`;
     const headerBuffer = Buffer.from(header, 'ascii');

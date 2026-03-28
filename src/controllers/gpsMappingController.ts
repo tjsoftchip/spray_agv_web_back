@@ -271,11 +271,44 @@ export const endRoadRecording = async (req: Request, res: Response) => {
 export const getRoads = async (req: Request, res: Response) => {
   try {
     const session = getOrCreateSession();
+
+    // 如果 session 中没有道路数据，尝试从文件加载
+    if (session.roads.length === 0) {
+      const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
+      const gpsRoutesPath = path.join(mapsDir, 'gps_routes.json');
+
+      if (fs.existsSync(gpsRoutesPath)) {
+        try {
+          const fileData = JSON.parse(fs.readFileSync(gpsRoutesPath, 'utf-8'));
+          if (fileData.roads && Array.isArray(fileData.roads)) {
+            session.roads = fileData.roads;
+            // 恢复 origin 以便坐标服务可用
+            if (fileData.origin && !session.origin) {
+              session.origin = fileData.origin;
+              session.supplyStation = { gps: fileData.origin.gps, mapXy: { x: 0, y: 0 } };
+              initServices({
+                latitude: fileData.origin.gps.latitude,
+                longitude: fileData.origin.gps.longitude,
+                rotation: fileData.origin.rotation || 0
+              }, fileData.origin.utm);
+            }
+            console.log(`[GPS建图] 从文件加载了 ${session.roads.length} 条道路`);
+          }
+        } catch (e) {
+          console.warn('[GPS建图] 加载 gps_routes.json 失败:', e);
+        }
+      }
+    }
+
     const roadsWithStats = session.roads.map(road => {
       let length = 0;
       for (let i = 1; i < road.points.length; i++) {
-        const p1 = road.points[i - 1].mapXy, p2 = road.points[i].mapXy;
-        length += Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
+        // 兼容 mapXy 和 map_xy 两种命名
+        const p1 = road.points[i - 1].mapXy || (road.points[i - 1] as any).map_xy;
+        const p2 = road.points[i].mapXy || (road.points[i] as any).map_xy;
+        if (p1 && p2) {
+          length += Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
+        }
       }
       return { ...road, pointCount: road.points.length, length };
     });
@@ -472,7 +505,40 @@ export const generateIntersections = async (req: Request, res: Response) => {
 
 export const getIntersections = async (req: Request, res: Response) => {
   try {
-    res.json({ success: true, data: getOrCreateSession().intersections });
+    const session = getOrCreateSession();
+
+    // 如果 session 中没有交叉点数据，尝试从文件加载
+    if (session.intersections.length === 0) {
+      const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
+      const gpsRoutesPath = path.join(mapsDir, 'gps_routes.json');
+
+      if (fs.existsSync(gpsRoutesPath)) {
+        try {
+          const fileData = JSON.parse(fs.readFileSync(gpsRoutesPath, 'utf-8'));
+          if (fileData.intersections && Array.isArray(fileData.intersections)) {
+            session.intersections = fileData.intersections;
+            console.log(`[GPS建图] 从文件加载了 ${session.intersections.length} 个交叉点`);
+          }
+          // 同时加载道路和原点（如果还没有）
+          if (fileData.roads && Array.isArray(fileData.roads) && session.roads.length === 0) {
+            session.roads = fileData.roads;
+          }
+          if (fileData.origin && !session.origin) {
+            session.origin = fileData.origin;
+            session.supplyStation = { gps: fileData.origin.gps, mapXy: { x: 0, y: 0 } };
+            initServices({
+              latitude: fileData.origin.gps.latitude,
+              longitude: fileData.origin.gps.longitude,
+              rotation: fileData.origin.rotation || 0
+            }, fileData.origin.utm);
+          }
+        } catch (e) {
+          console.warn('[GPS建图] 加载交叉点数据失败:', e);
+        }
+      }
+    }
+
+    res.json({ success: true, data: session.intersections });
   } catch (error) {
     res.status(500).json({ success: false, message: '获取交叉点失败' });
   }
@@ -507,7 +573,27 @@ export const generateBeamPositions = async (req: Request, res: Response) => {
 
 export const getBeamPositions = async (req: Request, res: Response) => {
   try {
-    res.json({ success: true, data: getOrCreateSession().beamPositions });
+    const session = getOrCreateSession();
+
+    // 如果 session 中没有梁位数据，尝试从文件加载
+    if (session.beamPositions.length === 0) {
+      const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
+      const beamPositionsPath = path.join(mapsDir, 'beam_positions.json');
+
+      if (fs.existsSync(beamPositionsPath)) {
+        try {
+          const fileData = JSON.parse(fs.readFileSync(beamPositionsPath, 'utf-8'));
+          if (fileData.positions && Array.isArray(fileData.positions)) {
+            session.beamPositions = fileData.positions;
+            console.log(`[GPS建图] 从文件加载了 ${session.beamPositions.length} 个梁位`);
+          }
+        } catch (e) {
+          console.warn('[GPS建图] 加载 beam_positions.json 失败:', e);
+        }
+      }
+    }
+
+    res.json({ success: true, data: session.beamPositions });
   } catch (error) {
     res.status(500).json({ success: false, message: '获取梁位失败' });
   }
@@ -869,6 +955,60 @@ function generateRoutesYaml(roads: Road[], turnArcs: TurnArc[], origin: any): st
 export const getMappingStatus = async (req: Request, res: Response) => {
   try {
     const session = getOrCreateSession();
+
+    // 如果 session 中没有数据，尝试从文件加载
+    if (session.roads.length === 0 || session.beamPositions.length === 0) {
+      const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
+      const gpsRoutesPath = path.join(mapsDir, 'gps_routes.json');
+      const beamPositionsPath = path.join(mapsDir, 'beam_positions.json');
+
+      // 加载道路和交叉点数据
+      if (fs.existsSync(gpsRoutesPath) && session.roads.length === 0) {
+        try {
+          const fileData = JSON.parse(fs.readFileSync(gpsRoutesPath, 'utf-8'));
+          if (fileData.roads && Array.isArray(fileData.roads)) {
+            session.roads = fileData.roads;
+          }
+          if (fileData.intersections && Array.isArray(fileData.intersections)) {
+            session.intersections = fileData.intersections;
+          }
+          if (fileData.turn_arcs && Array.isArray(fileData.turn_arcs)) {
+            session.turnArcs = fileData.turn_arcs;
+          }
+          if (fileData.origin && !session.origin) {
+            session.origin = fileData.origin;
+            session.supplyStation = { gps: fileData.origin.gps, mapXy: { x: 0, y: 0 } };
+            initServices({
+              latitude: fileData.origin.gps.latitude,
+              longitude: fileData.origin.gps.longitude,
+              rotation: fileData.origin.rotation || 0
+            }, fileData.origin.utm);
+          }
+          console.log(`[GPS建图] 状态检查时从文件加载: ${session.roads.length}条道路, ${session.intersections.length}个交叉点`);
+        } catch (e) {
+          console.warn('[GPS建图] 状态检查时加载 gps_routes.json 失败:', e);
+        }
+      }
+
+      // 加载梁位数据
+      if (fs.existsSync(beamPositionsPath) && session.beamPositions.length === 0) {
+        try {
+          const beamData = JSON.parse(fs.readFileSync(beamPositionsPath, 'utf-8'));
+          if (beamData.positions && Array.isArray(beamData.positions)) {
+            session.beamPositions = beamData.positions;
+            console.log(`[GPS建图] 状态检查时从文件加载: ${session.beamPositions.length}个梁位`);
+          }
+        } catch (e) {
+          console.warn('[GPS建图] 状态检查时加载 beam_positions.json 失败:', e);
+        }
+      }
+
+      // 如果加载了数据，更新状态
+      if (session.roads.length > 0 && session.beamPositions.length > 0) {
+        session.status = 'completed';
+      }
+    }
+
     res.json({
       success: true,
       data: {
@@ -881,7 +1021,9 @@ export const getMappingStatus = async (req: Request, res: Response) => {
         beamPositionCount: session.beamPositions.length,
         currentRoadId: session.currentRoadId,
         lastUpdateTime: session.lastUpdateTime,
-        turnArcs: session.turnArcs
+        turnArcs: session.turnArcs,
+        intersections: session.intersections,
+        beamPositions: session.beamPositions
       }
     });
   } catch (error) {
