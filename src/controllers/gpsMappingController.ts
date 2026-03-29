@@ -1033,13 +1033,33 @@ export const getMappingStatus = async (req: Request, res: Response) => {
 
 export const resetMapping = async (req: Request, res: Response) => {
   try {
-    currentSession = null;
+    // 创建一个新的空会话，而不是设为null
+    // 这样后续调用getOrCreateSession时不会从文件重新加载
+    currentSession = {
+      id: `session_${Date.now()}`,
+      status: 'idle',
+      currentRoadId: null,
+      currentRoadType: null,
+      origin: null,
+      supplyStation: null,
+      roads: [],
+      intersections: [],
+      turnArcs: [],
+      beamPositions: [],
+      angles: null,
+      recordingStartTime: null,
+      lastUpdateTime: Date.now()
+    };
     coordinateService = null;
     mapFileGenerator = null;
     roadProcessor = null;
     arcGenerator = null;
+
+    console.log('[GPS建图] 建图会话已重置，可以开始新建地图');
+
     res.json({ success: true, message: '建图会话已重置' });
   } catch (error) {
+    console.error('重置建图失败:', error);
     res.status(500).json({ success: false, message: '重置建图失败' });
   }
 };

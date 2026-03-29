@@ -881,65 +881,114 @@ export class BeamPositionProcessor {
   generateBeamPositions(intersections: Intersection[], roads: Road[]): BeamPosition[] {
     const index = this.buildIndex(intersections);
 
+    // 计算纵向道路的平均X坐标，按X从小到大排序（西到东）
     const longitudinalRoads = roads
       .filter(r => r.type === 'longitudinal')
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .map(r => {
+        const xs = r.points.map(p => p.mapXy.x);
+        const avgX = xs.reduce((sum, x) => sum + x, 0) / xs.length;
+        return { ...r, _avgX: avgX };
+      })
+      .sort((a, b) => a._avgX - b._avgX);
 
+    // 计算横向道路的平均Y坐标，按Y从小到大排序（南到北）
     const horizontalRoads = roads
       .filter(r => r.type === 'horizontal')
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .map(r => {
+        const ys = r.points.map(p => p.mapXy.y);
+        const avgY = ys.reduce((sum, y) => sum + y, 0) / ys.length;
+        return { ...r, _avgY: avgY };
+      })
+      .sort((a, b) => a._avgY - b._avgY);
+
+    console.log('[BeamPositionProcessor] 纵向道路排序（西→东）:');
+    longitudinalRoads.forEach(r => {
+      console.log(`  ${r.name} (${r.id}): 平均X=${r._avgX.toFixed(2)}`);
+    });
+    console.log('[BeamPositionProcessor] 横向道路排序（南→北）:');
+    horizontalRoads.forEach(r => {
+      console.log(`  ${r.name} (${r.id}): 平均Y=${r._avgY.toFixed(2)}`);
+    });
 
     const beamPositions: BeamPosition[] = [];
 
     for (let i = 0; i < longitudinalRoads.length - 1; i++) {
-      const v1 = longitudinalRoads[i];
-      const v2 = longitudinalRoads[i + 1];
+      const roadWest = longitudinalRoads[i];
+      const roadEast = longitudinalRoads[i + 1];
 
       for (let j = 0; j < horizontalRoads.length - 1; j++) {
-        const h1 = horizontalRoads[j];
-        const h2 = horizontalRoads[j + 1];
+        const roadSouth = horizontalRoads[j];
+        const roadNorth = horizontalRoads[j + 1];
 
-        const blId = index.byRoads.get(`${v1.id}:${h1.id}`);
-        const brId = index.byRoads.get(`${v2.id}:${h1.id}`);
-        const tlId = index.byRoads.get(`${v1.id}:${h2.id}`);
-        const trId = index.byRoads.get(`${v2.id}:${h2.id}`);
+        // 查找四个角的交叉点
+        // SW: 西侧纵向道路 + 南侧横向道路
+        // SE: 东侧纵向道路 + 南侧横向道路
+        // NW: 西侧纵向道路 + 北侧横向道路
+        // NE: 东侧纵向道路 + 北侧横向道路
+        const swId = index.byRoads.get(`${roadWest.id}:${roadSouth.id}`);
+        const seId = index.byRoads.get(`${roadEast.id}:${roadSouth.id}`);
+        const nwId = index.byRoads.get(`${roadWest.id}:${roadNorth.id}`);
+        const trId = index.byRoads.get(`${roadEast.id}:${roadNorth.id}`);
 
-        if (blId && brId && tlId && trId) {
-          const bl = index.byId.get(blId)!;
-          const br = index.byId.get(brId)!;
-          const tl = index.byId.get(tlId)!;
+        if (swId && seId && nwId && trId) {
+          const sw = index.byId.get(swId)!;
+          const se = index.byId.get(seId)!;
+          const nw = index.byId.get(nwId)!;
           const tr = index.byId.get(trId)!;
 
-          const centerX = (bl.center.mapXy.x + br.center.mapXy.x + tl.center.mapXy.x + tr.center.mapXy.x) / 4;
-          const centerY = (bl.center.mapXy.y + br.center.mapXy.y + tl.center.mapXy.y + tr.center.mapXy.y) / 4;
+          const centerX = (sw.center.mapXy.x + se.center.mapXy.x + nw.center.mapXy.x + tr.center.mapXy.x) / 4;
+          const centerY = (sw.center.mapXy.y + se.center.mapXy.y + nw.center.mapXy.y + tr.center.mapXy.y) / 4;
+
+          const beamName = `${roadWest.name}-${roadEast.name} × ${roadSouth.name}-${roadNorth.name}`;
 
           beamPositions.push({
-            id: `beam_${v1.name}${v2.name}_${h1.name}${h2.name}`,
-            name: `${v1.name}-${v2.name} × ${h1.name}-${h2.name}`,
-            row: v1.name,
+            id: `beam_${roadWest.name}${roadEast.name}_${roadSouth.name}${roadNorth.name}`,
+            name: beamName,
+            row: `${roadWest.name}-${roadEast.name}`,
             col: j + 1,
             center: { x: centerX, y: centerY },
-            boundaries: { north: h2.id, south: h1.id, east: v2.id, west: v1.id },
-            corner_intersections: [blId, brId, tlId, trId],
+            boundaries: { north: roadNorth.id, south: roadSouth.id, east: roadEast.id, west: roadWest.id },
+            corner_intersections: [swId, seId, nwId, trId],
             neighbors: {}
           });
+
+          console.log(`[BeamPositionProcessor] 生成梁位: ${beamName}`);
+          console.log(`  西: ${roadWest.name}(X=${roadWest._avgX.toFixed(2)}), 东: ${roadEast.name}(X=${roadEast._avgX.toFixed(2)})`);
+          console.log(`  南: ${roadSouth.name}(Y=${roadSouth._avgY.toFixed(2)}), 北: ${roadNorth.name}(Y=${roadNorth._avgY.toFixed(2)})`);
+          console.log(`  角点: SW=${swId}, SE=${seId}, NW=${nwId}, NE=${trId}`);
         }
       }
     }
 
-    // 设置邻居关系
+    // 设置邻居关系（基于边界道路重叠判断）
     for (const beam of beamPositions) {
       const neighbors: any = {};
       for (const other of beamPositions) {
         if (beam.id === other.id) continue;
-        const dx = other.center.x - beam.center.x;
-        const dy = other.center.y - beam.center.y;
-        if (Math.abs(dx) > Math.abs(dy)) {
-          if (dx > 0) neighbors.right = other.id;
-          else neighbors.left = other.id;
-        } else {
-          if (dy > 0) neighbors.top = other.id;
-          else neighbors.bottom = other.id;
+
+        // 查找左侧相邻梁位（共享西侧道路）
+        if (other.boundaries.east === beam.boundaries.west &&
+            other.boundaries.south === beam.boundaries.south &&
+            other.boundaries.north === beam.boundaries.north) {
+          neighbors.left = other.id;
+        }
+        // 查找右侧相邻梁位（共享东侧道路）
+        if (other.boundaries.west === beam.boundaries.east &&
+            other.boundaries.south === beam.boundaries.south &&
+            other.boundaries.north === beam.boundaries.north) {
+          neighbors.right = other.id;
+        }
+        // 查找上方相邻梁位（共享北侧道路）
+        if (other.boundaries.south === beam.boundaries.north &&
+            other.boundaries.west === beam.boundaries.west &&
+            other.boundaries.east === beam.boundaries.east) {
+          neighbors.top = other.id;
+        }
+        // 查找下方相邻梁位（共享南侧道路）
+        if (other.boundaries.north === beam.boundaries.south &&
+            other.boundaries.west === beam.boundaries.west &&
+            other.boundaries.east === beam.boundaries.east) {
+          neighbors.bottom = other.id;
         }
       }
       beam.neighbors = neighbors;
