@@ -17,6 +17,20 @@ export interface Point2D {
   y: number;
 }
 
+// 辅助函数：获取道路点的地图坐标（兼容 mapXy 和 map_xy 两种格式）
+function getMapXy(point: RoadPoint | TurnArcPoint): MapPoint {
+  if (point.mapXy) return point.mapXy;
+  if ((point as any).map_xy) return (point as any).map_xy;
+  return { x: 0, y: 0 };  // 默认值，应该不会发生
+}
+
+// 辅助函数：获取交叉点中心的地图坐标
+function getInterCenterMapXy(inter: Intersection): MapPoint {
+  if (inter.center.mapXy) return inter.center.mapXy;
+  if ((inter.center as any).map_xy) return (inter.center as any).map_xy;
+  return { x: 0, y: 0 };
+}
+
 export interface GPScoord {
   lat: number;
   lon: number;
@@ -255,9 +269,11 @@ export class GPSRoadProcessor {
     for (let i = 1; i < points.length; i++) {
       const prev = validPoints[validPoints.length - 1];
       const curr = points[i];
+      const prevMap = getMapXy(prev);
+      const currMap = getMapXy(curr);
       const distance = this.coordinateService
         ? this.coordinateService.haversineDistance(prev.gps.latitude, prev.gps.longitude, curr.gps.latitude, curr.gps.longitude)
-        : Math.sqrt((curr.mapXy.x - prev.mapXy.x) ** 2 + (curr.mapXy.y - prev.mapXy.y) ** 2);
+        : Math.sqrt((currMap.x - prevMap.x) ** 2 + (currMap.y - prevMap.y) ** 2);
       if (distance <= maxDistance) validPoints.push(curr);
     }
     return validPoints.length >= minPoints ? validPoints : points.slice(0, minPoints);
@@ -341,8 +357,8 @@ export class GPSRoadProcessor {
   private getRoadDirection(points: RoadPoint[]): number | null {
     if (points.length < 2) return null;
 
-    const start = points[0].mapXy;
-    const end = points[points.length - 1].mapXy;
+    const start = getMapXy(points[0]);
+    const end = getMapXy(points[points.length - 1]);
     const dx = end.x - start.x;
     const dy = end.y - start.y;
     const displacement = Math.sqrt(dx * dx + dy * dy);
@@ -355,14 +371,14 @@ export class GPSRoadProcessor {
     // 位移太小，使用PCA方法
     const pcaAngle = this.pcaDirection(points);
     // 检查PCA是否有足够的方差（不是所有点重合）
-    const pts = points;
-    const n = pts.length;
+    const n = points.length;
     let meanX = 0, meanY = 0;
-    for (const p of pts) { meanX += p.mapXy.x; meanY += p.mapXy.y; }
+    for (const p of points) { const m = getMapXy(p); meanX += m.x; meanY += m.y; }
     meanX /= n; meanY /= n;
     let maxDist = 0;
-    for (const p of pts) {
-      const d = Math.sqrt((p.mapXy.x - meanX)**2 + (p.mapXy.y - meanY)**2);
+    for (const p of points) {
+      const m = getMapXy(p);
+      const d = Math.sqrt((m.x - meanX)**2 + (m.y - meanY)**2);
       if (d > maxDist) maxDist = d;
     }
     // 如果所有点几乎重合，PCA结果不可靠，返回null
@@ -378,13 +394,14 @@ export class GPSRoadProcessor {
 
     const n = points.length;
     let meanX = 0, meanY = 0;
-    for (const p of points) { meanX += p.mapXy.x; meanY += p.mapXy.y; }
+    for (const p of points) { const m = getMapXy(p); meanX += m.x; meanY += m.y; }
     meanX /= n; meanY /= n;
 
     let covXX = 0, covYY = 0, covXY = 0;
     for (const p of points) {
-      const dx = p.mapXy.x - meanX;
-      const dy = p.mapXy.y - meanY;
+      const m = getMapXy(p);
+      const dx = m.x - meanX;
+      const dy = m.y - meanY;
       covXX += dx * dx;
       covYY += dy * dy;
       covXY += dx * dy;
@@ -434,8 +451,9 @@ export class GPSRoadProcessor {
     const offsets: number[] = [];
 
     for (const p of points) {
-      projections.push(p.mapXy.x * dx + p.mapXy.y * dy);
-      offsets.push(p.mapXy.x * perpDx + p.mapXy.y * perpDy);
+      const m = getMapXy(p);
+      projections.push(m.x * dx + m.y * dy);
+      offsets.push(m.x * perpDx + m.y * perpDy);
     }
 
     const minOffset = Math.min(...offsets);
@@ -591,15 +609,20 @@ export class IntersectionProcessor {
     const dv = { x: Math.cos(longitudinalAngle), y: Math.sin(longitudinalAngle) };
     const dh = { x: Math.cos(horizontalAngle), y: Math.sin(horizontalAngle) };
 
+    const interCenter = getInterCenterMapXy(inter);
+
     // 纵向路上的相邻交点
     const vInterIds = index.byRoad.get(inter.road_v_id || '') || [];
     const vOthers = vInterIds.map(id => index.byId.get(id)!).filter(o => o && o.id !== inter.id);
 
     if (vOthers.length > 0) {
-      const vProjs = vOthers.map(o => ({
-        proj: (o.center.mapXy.x - inter.center.mapXy.x) * dv.x + (o.center.mapXy.y - inter.center.mapXy.y) * dv.y,
-        inter: o
-      }));
+      const vProjs = vOthers.map(o => {
+        const oCenter = getInterCenterMapXy(o);
+        return {
+          proj: (oCenter.x - interCenter.x) * dv.x + (oCenter.y - interCenter.y) * dv.y,
+          inter: o
+        };
+      });
       const posNeighbors = vProjs.filter(p => p.proj > 0).sort((a, b) => a.proj - b.proj);
       const negNeighbors = vProjs.filter(p => p.proj < 0).sort((a, b) => Math.abs(a.proj) - Math.abs(b.proj));
       if (posNeighbors.length > 0) result.vPositive = posNeighbors[0].inter;
@@ -611,10 +634,13 @@ export class IntersectionProcessor {
     const hOthers = hInterIds.map(id => index.byId.get(id)!).filter(o => o && o.id !== inter.id);
 
     if (hOthers.length > 0) {
-      const hProjs = hOthers.map(o => ({
-        proj: (o.center.mapXy.x - inter.center.mapXy.x) * dh.x + (o.center.mapXy.y - inter.center.mapXy.y) * dh.y,
-        inter: o
-      }));
+      const hProjs = hOthers.map(o => {
+        const oCenter = getInterCenterMapXy(o);
+        return {
+          proj: (oCenter.x - interCenter.x) * dh.x + (oCenter.y - interCenter.y) * dh.y,
+          inter: o
+        };
+      });
       const posNeighbors = hProjs.filter(p => p.proj > 0).sort((a, b) => a.proj - b.proj);
       const negNeighbors = hProjs.filter(p => p.proj < 0).sort((a, b) => Math.abs(a.proj) - Math.abs(b.proj));
       if (posNeighbors.length > 0) result.hPositive = posNeighbors[0].inter;
@@ -715,8 +741,9 @@ export class TurnArcGenerator {
     radius: number = 4.5,
     numPoints: number = 36
   ): TurnArc {
-    const cx = inter.center.mapXy.x;
-    const cy = inter.center.mapXy.y;
+    const interCenter = getInterCenterMapXy(inter);
+    const cx = interCenter.x;
+    const cy = interCenter.y;
 
     // 方向向量
     const dvX = Math.cos(roadVAngle);
@@ -885,7 +912,7 @@ export class BeamPositionProcessor {
     const longitudinalRoads = roads
       .filter(r => r.type === 'longitudinal')
       .map(r => {
-        const xs = r.points.map(p => p.mapXy.x);
+        const xs = r.points.map(p => getMapXy(p).x);
         const avgX = xs.reduce((sum, x) => sum + x, 0) / xs.length;
         return { ...r, _avgX: avgX };
       })
@@ -895,7 +922,7 @@ export class BeamPositionProcessor {
     const horizontalRoads = roads
       .filter(r => r.type === 'horizontal')
       .map(r => {
-        const ys = r.points.map(p => p.mapXy.y);
+        const ys = r.points.map(p => getMapXy(p).y);
         const avgY = ys.reduce((sum, y) => sum + y, 0) / ys.length;
         return { ...r, _avgY: avgY };
       })
@@ -936,8 +963,13 @@ export class BeamPositionProcessor {
           const nw = index.byId.get(nwId)!;
           const tr = index.byId.get(trId)!;
 
-          const centerX = (sw.center.mapXy.x + se.center.mapXy.x + nw.center.mapXy.x + tr.center.mapXy.x) / 4;
-          const centerY = (sw.center.mapXy.y + se.center.mapXy.y + nw.center.mapXy.y + tr.center.mapXy.y) / 4;
+          const swCenter = getInterCenterMapXy(sw);
+          const seCenter = getInterCenterMapXy(se);
+          const nwCenter = getInterCenterMapXy(nw);
+          const trCenter = getInterCenterMapXy(tr);
+
+          const centerX = (swCenter.x + seCenter.x + nwCenter.x + trCenter.x) / 4;
+          const centerY = (swCenter.y + seCenter.y + nwCenter.y + trCenter.y) / 4;
 
           const beamName = `${roadWest.name}-${roadEast.name} × ${roadSouth.name}-${roadNorth.name}`;
 
@@ -1333,6 +1365,87 @@ mode: scale
       }))
     };
   }
+}
+
+// ============================================================
+// 补给站入口确定服务
+// ============================================================
+
+export interface SupplyStationEntry {
+  entry_road_id: string;
+  entry_intersection_id: string;
+  heading: number;
+}
+
+/**
+ * 确定补给站入口（建图时自动调用）
+ * 1. 找到经过原点(0,0)的道路
+ * 2. 找到该道路上距离原点最近的交叉点
+ * 3. 计算车头朝向（从交叉点到原点的方向）
+ */
+export function determineSupplyStationEntry(
+  roads: Road[],
+  intersections: Intersection[]
+): SupplyStationEntry | null {
+  // 1. 找到经过原点(0,0)的道路（距离<2米的点）
+  let entryRoad: Road | null = null;
+  let minDistToOrigin = Infinity;
+
+  for (const road of roads) {
+    if (!road.points || road.points.length === 0) continue;
+
+    for (const point of road.points) {
+      const mapXy = getMapXy(point as any);
+      const dist = Math.sqrt(mapXy.x ** 2 + mapXy.y ** 2);
+      if (dist < minDistToOrigin) {
+        minDistToOrigin = dist;
+        if (dist < 2.0) {  // 2米阈值
+          entryRoad = road;
+        }
+      }
+    }
+  }
+
+  if (!entryRoad) {
+    console.warn('[determineSupplyStationEntry] 未找到经过原点的道路');
+    return null;
+  }
+
+  console.log(`[determineSupplyStationEntry] 找到入口道路: ${entryRoad.id} (${entryRoad.name})`);
+
+  // 2. 找到该道路上距离原点最近的交叉点
+  let nearestIntersection: Intersection | null = null;
+  let minInterDist = Infinity;
+
+  for (const inter of intersections) {
+    if (!inter.connectedRoads || !inter.connectedRoads.includes(entryRoad.id)) continue;
+
+    const interCenter = getInterCenterMapXy(inter);
+    const dist = Math.sqrt(interCenter.x ** 2 + interCenter.y ** 2);
+    if (dist < minInterDist) {
+      minInterDist = dist;
+      nearestIntersection = inter;
+    }
+  }
+
+  if (!nearestIntersection) {
+    console.warn('[determineSupplyStationEntry] 未找到入口道路上的交叉点');
+    return null;
+  }
+
+  console.log(`[determineSupplyStationEntry] 找到入口交叉点: ${nearestIntersection.id}`);
+
+  // 3. 计算车头朝向（从交叉点到原点的方向）
+  const interCenter = getInterCenterMapXy(nearestIntersection);
+  const heading = Math.atan2(-interCenter.y, -interCenter.x);
+
+  console.log(`[determineSupplyStationEntry] 车头朝向: ${heading.toFixed(4)} rad (${(heading * 180 / Math.PI).toFixed(1)}°)`);
+
+  return {
+    entry_road_id: entryRoad.id,
+    entry_intersection_id: nearestIntersection.id,
+    heading: heading
+  };
 }
 
 // ============================================================

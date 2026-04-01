@@ -2,68 +2,16 @@
   "version": "1.0",
   "positions": [
     {
-      "id": "beam_ab_12",
-      "name": "a-b × 1-2",
-      "row": "a",
+      "id": "beam_bc_13",
+      "name": "b-c × 1-3",
+      "row": "b-c",
       "col": 1,
       "center": {
-        "x": 17.381146143595593,
-        "y": 13.576559586072941
-      },
-      "boundaries": {
-        "north": "road_1774606118157",
-        "south": "road_1774605866427",
-        "east": "road_1774606244923",
-        "west": "road_1774606013116"
-      },
-      "corner_intersections": [
-        "inter_a_1",
-        "inter_b_1",
-        "inter_a_2",
-        "inter_b_2"
-      ],
-      "neighbors": {
-        "top": "beam_ab_23",
-        "left": "beam_bc_23"
-      }
-    },
-    {
-      "id": "beam_ab_23",
-      "name": "a-b × 2-3",
-      "row": "a",
-      "col": 2,
-      "center": {
-        "x": 16.657802946377263,
-        "y": 17.437570659513604
+        "x": 10.054962288954133,
+        "y": 5.730016490142146
       },
       "boundaries": {
         "north": "road_1774606640481",
-        "south": "road_1774606118157",
-        "east": "road_1774606244923",
-        "west": "road_1774606013116"
-      },
-      "corner_intersections": [
-        "inter_a_2",
-        "inter_b_2",
-        "inter_a_3",
-        "inter_b_3"
-      ],
-      "neighbors": {
-        "bottom": "beam_ab_12",
-        "left": "beam_bc_23"
-      }
-    },
-    {
-      "id": "beam_bc_12",
-      "name": "b-c × 1-2",
-      "row": "b",
-      "col": 1,
-      "center": {
-        "x": 8.898758999895396,
-        "y": 11.901518094596824
-      },
-      "boundaries": {
-        "north": "road_1774606118157",
         "south": "road_1774605866427",
         "east": "road_1774606379136",
         "west": "road_1774606244923"
@@ -71,38 +19,90 @@
       "corner_intersections": [
         "inter_b_1",
         "inter_c_1",
-        "inter_b_2",
-        "inter_c_2"
-      ],
-      "neighbors": {
-        "right": "beam_ab_23",
-        "top": "beam_bc_23"
-      }
-    },
-    {
-      "id": "beam_bc_23",
-      "name": "b-c × 2-3",
-      "row": "b",
-      "col": 2,
-      "center": {
-        "x": 8.175415802677065,
-        "y": 15.762529168037485
-      },
-      "boundaries": {
-        "north": "road_1774606640481",
-        "south": "road_1774606118157",
-        "east": "road_1774606379136",
-        "west": "road_1774606244923"
-      },
-      "corner_intersections": [
-        "inter_b_2",
-        "inter_c_2",
         "inter_b_3",
         "inter_c_3"
       ],
       "neighbors": {
-        "right": "beam_ab_23",
-        "bottom": "beam_bc_12"
+        "top": "beam_bc_32",
+        "right": "beam_ca_13"
+      }
+    },
+    {
+      "id": "beam_bc_32",
+      "name": "b-c × 3-2",
+      "row": "b-c",
+      "col": 2,
+      "center": {
+        "x": 8.175415802677065,
+        "y": 15.762529168037487
+      },
+      "boundaries": {
+        "north": "road_1774606118157",
+        "south": "road_1774606640481",
+        "east": "road_1774606379136",
+        "west": "road_1774606244923"
+      },
+      "corner_intersections": [
+        "inter_b_3",
+        "inter_c_3",
+        "inter_b_2",
+        "inter_c_2"
+      ],
+      "neighbors": {
+        "bottom": "beam_bc_13",
+        "right": "beam_ca_32"
+      }
+    },
+    {
+      "id": "beam_ca_13",
+      "name": "c-a × 1-3",
+      "row": "c-a",
+      "col": 1,
+      "center": {
+        "x": 26.0661888509256,
+        "y": 8.891799649337532
+      },
+      "boundaries": {
+        "north": "road_1774606640481",
+        "south": "road_1774605866427",
+        "east": "road_1774606013116",
+        "west": "road_1774606379136"
+      },
+      "corner_intersections": [
+        "inter_c_1",
+        "inter_a_1",
+        "inter_c_3",
+        "inter_a_3"
+      ],
+      "neighbors": {
+        "left": "beam_bc_13",
+        "top": "beam_ca_32"
+      }
+    },
+    {
+      "id": "beam_ca_32",
+      "name": "c-a × 3-2",
+      "row": "c-a",
+      "col": 2,
+      "center": {
+        "x": 24.186642364648527,
+        "y": 18.924312327232872
+      },
+      "boundaries": {
+        "north": "road_1774606118157",
+        "south": "road_1774606640481",
+        "east": "road_1774606013116",
+        "west": "road_1774606379136"
+      },
+      "corner_intersections": [
+        "inter_c_3",
+        "inter_a_3",
+        "inter_c_2",
+        "inter_a_2"
+      ],
+      "neighbors": {
+        "left": "beam_bc_32",
+        "bottom": "beam_ca_13"
       }
     }
   ]

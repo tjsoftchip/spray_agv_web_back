@@ -1,13 +1,13 @@
 /**
  * 作业规划控制器
  * 按照文档 web-gps-mapping-design.md 实现喷淋作业规划
- * 
+ *
  * 核心功能：
  * 1. 获取梁位列表（从GPS建图数据）
  * 2. 规划作业线路（闭环路径：补给站→梁位序列→补给站）
  * 3. 自动判断喷淋状态（共享道路双侧喷淋，非共享道路单侧喷淋）
  * 4. 执行作业（调用ROS2导航和喷淋服务）
- * 
+ *
  * ROS2服务调用:
  * - /navigation_task/start: 开始导航任务
  * - /navigation_task/pause: 暂停导航
@@ -19,6 +19,9 @@
 import { Request, Response } from 'express';
 import GPSMap from '../models/GPSMap';
 import rosbridgeService from '../services/rosbridgeService';
+import { jobRoutePlanner, JobRoute } from '../services/jobRoutePlanner';
+import fs from 'fs';
+import path from 'path';
 
 // 类型定义
 interface BeamPosition {
@@ -74,15 +77,6 @@ interface RouteSegment {
   };
 }
 
-interface JobRoute {
-  id: string;
-  name: string;
-  totalLength: number;
-  estimatedTime: number;
-  segments: RouteSegment[];
-  beamPositions: string[];
-}
-
 // 当前作业状态
 interface JobStatus {
   status: 'idle' | 'executing' | 'paused' | 'error';
@@ -103,6 +97,88 @@ let currentJobStatus: JobStatus = {
 };
 
 let jobHistory: any[] = [];
+
+// ==================== 坐标格式兼容辅助函数 ====================
+
+/**
+ * 获取道路点的地图坐标（兼容mapXy和map_xy两种格式）
+ */
+function getRoadPointMapXy(point: Road['points'][0]): { x: number; y: number } {
+  if (point.mapXy) return point.mapXy;
+  if ((point as any).map_xy) return (point as any).map_xy;
+  return { x: 0, y: 0 };
+}
+
+// ==================== 数据加载辅助函数 ====================
+
+const MAPS_DIR = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
+
+/**
+ * 从文件加载梁位数据
+ */
+function loadBeamPositionsFromFile(): BeamPosition[] {
+  const filePath = path.join(MAPS_DIR, 'beam_positions.json');
+  if (fs.existsSync(filePath)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      if (data.positions && Array.isArray(data.positions)) {
+        console.log(`[作业规划] 从文件加载了 ${data.positions.length} 个梁位`);
+        return data.positions;
+      }
+    } catch (e) {
+      console.warn('[作业规划] 加载 beam_positions.json 失败:', e);
+    }
+  }
+  return [];
+}
+
+/**
+ * 从文件加载道路数据
+ */
+function loadRoadsFromFile(): Road[] {
+  const filePath = path.join(MAPS_DIR, 'gps_routes.json');
+  if (fs.existsSync(filePath)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      if (data.roads && Array.isArray(data.roads)) {
+        console.log(`[作业规划] 从文件加载了 ${data.roads.length} 条道路`);
+        return data.roads;
+      }
+    } catch (e) {
+      console.warn('[作业规划] 加载 gps_routes.json 失败:', e);
+    }
+  }
+  return [];
+}
+
+/**
+ * 获取建图数据（优先从数据库，其次从文件）
+ */
+async function getMappingData(): Promise<{ beamPositions: BeamPosition[]; roads: Road[] }> {
+  // 先尝试从数据库获取
+  try {
+    const latestMap = await GPSMap.findOne({
+      where: { status: 'completed' },
+      order: [['updatedAt', 'DESC']]
+    });
+
+    if (latestMap && latestMap.beamPositions && latestMap.beamPositions.length > 0) {
+      console.log(`[作业规划] 从数据库加载了 ${latestMap.beamPositions.length} 个梁位`);
+      return {
+        beamPositions: latestMap.beamPositions,
+        roads: latestMap.roads || []
+      };
+    }
+  } catch (e) {
+    console.warn('[作业规划] 从数据库加载失败，尝试从文件加载:', e);
+  }
+
+  // 从文件加载
+  const beamPositions = loadBeamPositionsFromFile();
+  const roads = loadRoadsFromFile();
+
+  return { beamPositions, roads };
+}
 
 // ==================== 工具函数 ====================
 
@@ -384,8 +460,8 @@ function calculateRoadLength(road: Road): number {
   let length = 0;
   const points = road.points || [];
   for (let i = 1; i < points.length; i++) {
-    const p1 = points[i - 1].mapXy;
-    const p2 = points[i].mapXy;
+    const p1 = getRoadPointMapXy(points[i - 1]);
+    const p2 = getRoadPointMapXy(points[i]);
     length += Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
   }
   return length;
@@ -395,17 +471,13 @@ function calculateRoadLength(road: Road): number {
 
 /**
  * 获取梁位列表
- * 从最新的GPS建图数据中获取
+ * 从最新的GPS建图数据中获取（优先数据库，其次文件）
  */
 export const getBeamPositions = async (req: Request, res: Response) => {
   try {
-    // 从数据库获取最新的GPS地图
-    const latestMap = await GPSMap.findOne({
-      where: { status: 'completed' },
-      order: [['updatedAt', 'DESC']]
-    });
+    const { beamPositions } = await getMappingData();
 
-    if (!latestMap) {
+    if (beamPositions.length === 0) {
       return res.json({
         success: true,
         data: [],
@@ -415,7 +487,7 @@ export const getBeamPositions = async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      data: latestMap.beamPositions || []
+      data: beamPositions
     });
   } catch (error) {
     console.error('获取梁位列表失败:', error);
@@ -428,7 +500,7 @@ export const getBeamPositions = async (req: Request, res: Response) => {
 
 /**
  * 规划作业路线
- * 按照文档实现闭环路径规划和喷淋状态自动判断
+ * 使用 JobRoutePlanner 实现完整路线规划
  */
 export const planRoutes = async (req: Request, res: Response) => {
   try {
@@ -441,26 +513,20 @@ export const planRoutes = async (req: Request, res: Response) => {
       });
     }
 
-    // 从数据库获取最新的GPS地图
-    const latestMap = await GPSMap.findOne({
-      where: { status: 'completed' },
-      order: [['updatedAt', 'DESC']]
-    });
-
-    if (!latestMap) {
+    // 加载地图数据到规划器
+    const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
+    if (!jobRoutePlanner.loadData(mapsDir)) {
       return res.status(400).json({
         success: false,
-        message: '暂无建图数据，请先完成GPS建图'
+        message: '无法加载地图数据，请先完成GPS建图'
       });
     }
 
-    const beamPositions = latestMap.beamPositions || [];
-    const roads = latestMap.roads || [];
-
     // 验证梁位ID
-    const validIds = beamPositionIds.filter((id: string) =>
-      beamPositions.some((b: BeamPosition) => b.id === id)
-    );
+    const validIds = beamPositionIds.filter((id: string) => {
+      // 规划器内部会验证
+      return true;
+    });
 
     if (validIds.length === 0) {
       return res.status(400).json({
@@ -469,44 +535,30 @@ export const planRoutes = async (req: Request, res: Response) => {
       });
     }
 
-    // 补给站位置（原点）
-    const supplyStation = { x: 0, y: 0 };
+    // 使用规划器生成完整路线
+    const route = jobRoutePlanner.planJobRoute(validIds);
 
-    // 优化梁位顺序（贪心算法）
-    const orderedIds = optimizeBeamOrder(validIds, beamPositions, supplyStation);
+    // 生成YAML格式（可选，用于ROS2）
+    const yamlRoute = jobRoutePlanner.generateYAMLRoute(route);
 
-    // 生成路线段
-    const segments = generateRouteSegments(orderedIds, beamPositions, roads);
-
-    // 计算总长度
-    const totalLength = segments.reduce((sum, seg) => sum + seg.length, 0);
-
-    // 估算时间（直线0.2m/s，转弯0.1m/s，加上喷淋时间）
-    const travelTime = totalLength / 0.2;
-    const sprayTime = orderedIds.length * 60; // 每个梁位约1分钟喷淋时间
-    const estimatedTime = Math.ceil(travelTime + sprayTime);
-
-    const route: JobRoute = {
-      id: `route_${Date.now()}`,
-      name: `喷淋路线 ${new Date().toLocaleDateString()}`,
-      totalLength,
-      estimatedTime,
-      segments,
-      beamPositions: orderedIds
-    };
+    // 保存路线到文件（供ROS2使用）
+    const routePath = path.join(mapsDir, 'job_routes.yaml');
+    fs.writeFileSync(routePath, yamlRoute, 'utf-8');
+    console.log(`[作业规划] 路线已保存到: ${routePath}`);
 
     res.json({
       success: true,
       data: {
         route,
-        alternatives: [] // 可以生成多个备选路线
+        yaml: yamlRoute,
+        alternatives: []
       }
     });
   } catch (error) {
     console.error('规划路线失败:', error);
     res.status(500).json({
       success: false,
-      message: '规划路线失败'
+      message: `规划路线失败: ${(error as Error).message}`
     });
   }
 };
@@ -737,3 +789,161 @@ export const getJobHistory = async (req: Request, res: Response) => {
 export const getBeamPositionsLocal = getBeamPositions;
 export const planRoutesLocal = planRoutes;
 export const getJobStatusLocal = getJobStatus;
+
+// ==================== 路线预览 ====================
+
+/**
+ * 预览作业路线（不保存，仅返回可视化数据）
+ */
+export const previewRoute = async (req: Request, res: Response) => {
+  try {
+    const { beamPositionIds } = req.body;
+
+    if (!beamPositionIds || beamPositionIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: '请选择至少一个梁位'
+      });
+    }
+
+    // 加载地图数据到规划器
+    const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
+    if (!jobRoutePlanner.loadData(mapsDir)) {
+      return res.status(400).json({
+        success: false,
+        message: '无法加载地图数据，请先完成GPS建图'
+      });
+    }
+
+    // 生成预览路线
+    const route = jobRoutePlanner.planJobRoute(beamPositionIds);
+
+    // 提取可视化数据
+    const visualizationData = {
+      beamSequence: route.beam_sequence,
+      totalLength: route.statistics.total_length,
+      estimatedTime: route.statistics.estimated_time,
+      sprayLength: route.statistics.spray_length,
+      transitLength: route.statistics.transit_length,
+      segments: route.segments.map(seg => ({
+        id: seg.id,
+        type: seg.type,
+        roadId: seg.road_id,
+        beamId: seg.beam_id,
+        side: seg.side,
+        sprayMode: seg.spray_mode,
+        waypointCount: seg.waypoints.length,
+        // 前端可视化需要的坐标数据
+        coordinates: seg.waypoints.map(wp => ({
+          x: wp.x,
+          y: wp.y,
+          yaw: wp.yaw,
+          sprayAction: wp.spray_action
+        }))
+      }))
+    };
+
+    res.json({
+      success: true,
+      data: visualizationData
+    });
+  } catch (error) {
+    console.error('预览路线失败:', error);
+    res.status(500).json({
+      success: false,
+      message: `预览路线失败: ${(error as Error).message}`
+    });
+  }
+};
+
+/**
+ * 获取地图数据（供前端可视化使用）
+ */
+export const getMapData = async (req: Request, res: Response) => {
+  try {
+    const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
+
+    // 加载道路数据
+    const roadsPath = path.join(mapsDir, 'gps_routes.json');
+    let roads: any[] = [];
+    let intersections: any[] = [];
+    let turnArcs: any[] = [];
+    let origin: any = null;
+
+    if (fs.existsSync(roadsPath)) {
+      const data = JSON.parse(fs.readFileSync(roadsPath, 'utf-8'));
+      roads = data.roads || [];
+      intersections = data.intersections || [];
+      turnArcs = data.turn_arcs || [];
+      origin = data.origin || null;
+    }
+
+    // 加载梁位数据
+    const beamPath = path.join(mapsDir, 'beam_positions.json');
+    let beamPositions: any[] = [];
+    if (fs.existsSync(beamPath)) {
+      const data = JSON.parse(fs.readFileSync(beamPath, 'utf-8'));
+      beamPositions = data.positions || [];
+    }
+
+    res.json({
+      success: true,
+      data: {
+        roads: roads.map((r: any) => ({
+          id: r.id,
+          name: r.name,
+          type: r.type,
+          points: (r.points || []).map((p: any) => {
+            const xy = p.mapXy || p.map_xy || { x: 0, y: 0 };
+            return { x: xy.x, y: xy.y };
+          })
+        })),
+        intersections: intersections.map((i: any) => ({
+          id: i.id,
+          x: i.center?.map_xy?.x || i.center?.mapXy?.x || 0,
+          y: i.center?.map_xy?.y || i.center?.mapXy?.y || 0,
+          roadVId: i.road_v_id,
+          roadHId: i.road_h_id,
+          validQuadrants: i.valid_quadrants || []
+        })),
+        turnArcs: turnArcs.map((a: any) => ({
+          id: a.id,
+          intersectionId: a.intersection_id,
+          quadrant: a.quadrant,
+          center: a.center,
+          points: (a.points || []).map((p: any) => {
+            const xy = p.mapXy || p.map_xy || { x: 0, y: 0 };
+            return { x: xy.x, y: xy.y };
+          })
+        })),
+        beamPositions: beamPositions.map((b: any) => ({
+          id: b.id,
+          name: b.name,
+          row: b.row,
+          col: b.col,
+          center: b.center,
+          boundaries: b.boundaries,
+          neighbors: b.neighbors
+        })),
+        origin: origin ? {
+          latitude: origin.gps?.latitude || origin.gps?.lat,
+          longitude: origin.gps?.longitude || origin.gps?.lon
+        } : null,
+        supplyStation: {
+          x: 0,
+          y: 0,
+          name: '补给站'
+        }
+      }
+    });
+  } catch (error) {
+    console.error('获取地图数据失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取地图数据失败'
+    });
+  }
+};
+
+export const previewRouteLocal = previewRoute;
+export const getMapDataLocal = getMapData;

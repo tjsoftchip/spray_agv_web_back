@@ -14,7 +14,9 @@ import {
   TurnArcGenerator,
   BeamPositionProcessor,
   FittedLine,
-  GPSOrigin
+  GPSOrigin,
+  determineSupplyStationEntry,
+  SupplyStationEntry
 } from '../services/gpsMappingService';
 import rosbridgeService from '../services/rosbridgeService';
 import fs from 'fs';
@@ -45,6 +47,7 @@ interface MappingSession {
   angles: { longitudinal: number; horizontal: number } | null;
   recordingStartTime: number | null;
   lastUpdateTime: number;
+  isNewSession?: boolean;  // 标记是否为新建会话（不自动加载文件数据）
 }
 
 let currentSession: MappingSession | null = null;
@@ -75,7 +78,8 @@ function getOrCreateSession(): MappingSession {
       beamPositions: [],
       angles: null,
       recordingStartTime: null,
-      lastUpdateTime: Date.now()
+      lastUpdateTime: Date.now(),
+      isNewSession: false  // 默认允许从文件加载
     };
   }
   return currentSession;
@@ -102,6 +106,7 @@ export const startOriginCalibration = async (req: Request, res: Response) => {
     const session = getOrCreateSession();
     session.status = 'origin_calibration';
     session.lastUpdateTime = Date.now();
+    // 注意：不修改 isNewSession 标记，保持新建会话状态
     res.json({ success: true, message: '原点校准已开始', data: { sessionId: session.id, status: session.status } });
   } catch (error) {
     console.error('开始原点校准失败:', error);
@@ -129,6 +134,7 @@ export const completeOriginCalibration = async (req: Request, res: Response) => 
     session.supplyStation = { gps: { latitude, longitude, altitude }, mapXy: { x: 0, y: 0 } };
     session.status = 'road_recording';
     session.lastUpdateTime = Date.now();
+    // 注意：不修改 isNewSession 标记，保持新建会话状态，防止从文件加载旧数据
 
     if (rosbridgeService.isConnected()) {
       try {
@@ -272,8 +278,8 @@ export const getRoads = async (req: Request, res: Response) => {
   try {
     const session = getOrCreateSession();
 
-    // 如果 session 中没有道路数据，尝试从文件加载
-    if (session.roads.length === 0) {
+    // 只有在非新建会话模式下才从文件加载数据
+    if (!session.isNewSession && session.roads.length === 0) {
       const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
       const gpsRoutesPath = path.join(mapsDir, 'gps_routes.json');
 
@@ -375,20 +381,36 @@ export const generateIntersections = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: '服务未初始化，请先完成原点校准' });
     }
 
+    // 辅助函数：获取道路点的地图坐标（兼容 mapXy 和 map_xy 两种格式）
+    const getPointMapXy = (point: any): { x: number; y: number } | null => {
+      if (point.mapXy && point.mapXy.x !== undefined) {
+        return point.mapXy;
+      }
+      if (point.map_xy && point.map_xy.x !== undefined) {
+        return point.map_xy;
+      }
+      return null;
+    };
+
     // 验证道路数据质量
     const roadStats = session.roads.map(r => {
       const pts = r.points;
       let totalLen = 0;
       for (let i = 1; i < pts.length; i++) {
-        const dx = pts[i].mapXy.x - pts[i-1].mapXy.x;
-        const dy = pts[i].mapXy.y - pts[i-1].mapXy.y;
+        const p1 = getPointMapXy(pts[i]);
+        const p0 = getPointMapXy(pts[i-1]);
+        if (!p1 || !p0) continue;  // 跳过无效点
+        const dx = p1.x - p0.x;
+        const dy = p1.y - p0.y;
         totalLen += Math.sqrt(dx*dx + dy*dy);
       }
       // 计算首尾位移
-      const startEnd = Math.sqrt(
-        (pts[pts.length-1].mapXy.x - pts[0].mapXy.x)**2 +
-        (pts[pts.length-1].mapXy.y - pts[0].mapXy.y)**2
-      );
+      const lastPt = getPointMapXy(pts[pts.length-1]);
+      const firstPt = getPointMapXy(pts[0]);
+      const startEnd = (lastPt && firstPt) ? Math.sqrt(
+        (lastPt.x - firstPt.x)**2 +
+        (lastPt.y - firstPt.y)**2
+      ) : 0;
       return { name: r.name, type: r.type, pointCount: pts.length, totalLength: totalLen, displacement: startEnd };
     });
 
@@ -507,8 +529,8 @@ export const getIntersections = async (req: Request, res: Response) => {
   try {
     const session = getOrCreateSession();
 
-    // 如果 session 中没有交叉点数据，尝试从文件加载
-    if (session.intersections.length === 0) {
+    // 只有在非新建会话模式下才从文件加载数据
+    if (!session.isNewSession && session.intersections.length === 0) {
       const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
       const gpsRoutesPath = path.join(mapsDir, 'gps_routes.json');
 
@@ -575,8 +597,8 @@ export const getBeamPositions = async (req: Request, res: Response) => {
   try {
     const session = getOrCreateSession();
 
-    // 如果 session 中没有梁位数据，尝试从文件加载
-    if (session.beamPositions.length === 0) {
+    // 只有在非新建会话模式下才从文件加载数据
+    if (!session.isNewSession && session.beamPositions.length === 0) {
       const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
       const beamPositionsPath = path.join(mapsDir, 'beam_positions.json');
 
@@ -751,6 +773,16 @@ async function generateMapFilesAsync(session: MappingSession) {
       session.beamPositions = beamPositionProcessor.generateBeamPositions(session.intersections, processedRoads);
     }
 
+    // 确定补给站入口信息
+    generationStatus.progress = '确定补给站入口...';
+    console.log('[GPS建图] 确定补给站入口...');
+    const supplyStationEntry = determineSupplyStationEntry(session.roads, session.intersections);
+    if (supplyStationEntry) {
+      console.log(`[GPS建图] 补给站入口: 道路=${supplyStationEntry.entry_road_id}, 交叉点=${supplyStationEntry.entry_intersection_id}, 朝向=${(supplyStationEntry.heading * 180 / Math.PI).toFixed(1)}°`);
+    } else {
+      console.warn('[GPS建图] 无法确定补给站入口，将使用默认值');
+    }
+
     generationStatus.progress = '生成JSON文件...';
     console.log('[GPS建图] 生成JSON文件...');
     const origin = session.origin!;
@@ -764,28 +796,8 @@ async function generateMapFilesAsync(session: MappingSession) {
     fs.writeFileSync(path.join(mapsDir, 'gps_routes.json'), JSON.stringify(gpsRoutesJSON, null, 2));
     fs.writeFileSync(path.join(mapsDir, 'beam_positions.json'), JSON.stringify(beamPositionsJSON, null, 2));
 
-    // 生成ROS2参数格式的GPS原点配置
-    const gpsOriginYaml = `# GPS原点配置 - ROS2参数格式
-# 用于auto_initial_pose节点和route_executor节点
-# 生成时间: ${new Date().toISOString()}
-
-/**:
-  ros__parameters:
-    # GPS原点坐标 (WGS84)
-    origin_latitude: ${origin.gps.latitude}
-    origin_longitude: ${origin.gps.longitude}
-    origin_altitude: ${origin.gps.altitude || 0}
-
-    # 地图旋转角度（弧度）- 道路方向相对于UTM北的角度
-    map_rotation: ${origin.rotation || 0}
-
-    # UTM分区
-    utm_zone: ${origin.utm.zone}
-
-    # UTM坐标（预计算）
-    origin_easting: ${origin.utm.easting}
-    origin_northing: ${origin.utm.northing}
-`;
+    // 生成ROS2参数格式的GPS原点配置（包含补给站入口信息）
+    const gpsOriginYaml = generateGPSOriginYaml(origin, supplyStationEntry);
     fs.writeFileSync(path.join(mapsDir, 'gps_origin.yaml'), gpsOriginYaml);
 
     // 生成道路网络YAML文件
@@ -949,6 +961,59 @@ function generateRoutesYaml(roads: Road[], turnArcs: TurnArc[], origin: any): st
 }
 
 // ============================================================
+// 生成GPS原点YAML配置（包含补给站入口信息）
+// ============================================================
+
+function generateGPSOriginYaml(origin: any, supplyStationEntry: SupplyStationEntry | null): string {
+  const lines: string[] = [];
+  lines.push('# GPS原点配置 - ROS2参数格式');
+  lines.push('# 用于auto_initial_pose节点和route_executor节点');
+  lines.push(`# 生成时间: ${new Date().toISOString()}`);
+  lines.push('');
+  lines.push('/**:');
+  lines.push('  ros__parameters:');
+  lines.push('    # GPS原点坐标 (WGS84)');
+  lines.push(`    origin_latitude: ${origin.gps.latitude}`);
+  lines.push(`    origin_longitude: ${origin.gps.longitude}`);
+  lines.push(`    origin_altitude: ${origin.gps.altitude || 0}`);
+  lines.push('');
+  lines.push('    # 地图旋转角度（弧度）- 道路方向相对于UTM北的角度');
+  lines.push(`    map_rotation: ${origin.rotation || 0}`);
+  lines.push('');
+  lines.push('    # UTM分区');
+  lines.push(`    utm_zone: ${origin.utm.zone}`);
+  lines.push('');
+  lines.push('    # UTM坐标（预计算）');
+  lines.push(`    origin_easting: ${origin.utm.easting}`);
+  lines.push(`    origin_northing: ${origin.utm.northing}`);
+  lines.push('');
+
+  // 补给站配置
+  lines.push('    # 补给站配置');
+  lines.push('    supply_station:');
+  lines.push('      id: supply_station_1');
+  lines.push('      position:');
+  lines.push('        x: 0.0');
+  lines.push('        y: 0.0');
+
+  if (supplyStationEntry) {
+    lines.push(`      heading: ${supplyStationEntry.heading.toFixed(6)}  # ${(supplyStationEntry.heading * 180 / Math.PI).toFixed(1)}° (自动计算)`);
+    lines.push('      aruco_marker_id: 0');
+    lines.push('      approach_distance: 3.0');
+    lines.push(`      entry_road_id: ${supplyStationEntry.entry_road_id}  # 自动确定`);
+    lines.push(`      entry_intersection_id: ${supplyStationEntry.entry_intersection_id}  # 自动确定`);
+  } else {
+    lines.push('      heading: 0.0  # 默认朝向，无法自动确定');
+    lines.push('      aruco_marker_id: 0');
+    lines.push('      approach_distance: 3.0');
+    lines.push('      entry_road_id: ""  # 无法自动确定');
+    lines.push('      entry_intersection_id: ""  # 无法自动确定');
+  }
+
+  return lines.join('\n');
+}
+
+// ============================================================
 // 建图状态
 // ============================================================
 
@@ -956,8 +1021,9 @@ export const getMappingStatus = async (req: Request, res: Response) => {
   try {
     const session = getOrCreateSession();
 
-    // 如果 session 中没有数据，尝试从文件加载
-    if (session.roads.length === 0 || session.beamPositions.length === 0) {
+    // 只有在非新建会话模式下才从文件加载数据
+    // 如果session是新建的（isNewSession=true），跳过文件加载
+    if (!session.isNewSession && (session.roads.length === 0 || session.beamPositions.length === 0)) {
       const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
       const gpsRoutesPath = path.join(mapsDir, 'gps_routes.json');
       const beamPositionsPath = path.join(mapsDir, 'beam_positions.json');
@@ -1033,8 +1099,7 @@ export const getMappingStatus = async (req: Request, res: Response) => {
 
 export const resetMapping = async (req: Request, res: Response) => {
   try {
-    // 创建一个新的空会话，而不是设为null
-    // 这样后续调用getOrCreateSession时不会从文件重新加载
+    // 创建一个新的空会话，标记为新建会话（不从文件加载）
     currentSession = {
       id: `session_${Date.now()}`,
       status: 'idle',
@@ -1048,7 +1113,8 @@ export const resetMapping = async (req: Request, res: Response) => {
       beamPositions: [],
       angles: null,
       recordingStartTime: null,
-      lastUpdateTime: Date.now()
+      lastUpdateTime: Date.now(),
+      isNewSession: true  // 标记为新建会话，不自动加载文件数据
     };
     coordinateService = null;
     mapFileGenerator = null;
@@ -1157,7 +1223,8 @@ export const loadMappingFromDatabase = async (req: Request, res: Response) => {
       beamPositions: gpsMap.beamPositions,
       angles: null,
       recordingStartTime: null,
-      lastUpdateTime: Date.now()
+      lastUpdateTime: Date.now(),
+      isNewSession: false  // 从数据库加载的地图，不是新建会话
     };
 
     console.log('[GPS建图] 加载地图:', gpsMap.name);
