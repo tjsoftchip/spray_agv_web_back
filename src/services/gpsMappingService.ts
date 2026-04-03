@@ -652,6 +652,19 @@ export class IntersectionProcessor {
 
   /**
    * 判断象限有效性
+   *
+   * 坐标系定义：
+   * - 横向东为 +x 方向 → hPositive = 东, hNegative = 西
+   * - 纵向北为 +y 方向 → vPositive = 北, vNegative = 南
+   *
+   * 象限定义（从当前交点看出去的对角位置）：
+   * Q0: 右上角 (+x, +y) = hPositive(东) + vPositive(北)
+   * Q1: 左上角 (-x, +y) = hNegative(西) + vPositive(北)
+   * Q2: 左下角 (-x, -y) = hNegative(西) + vNegative(南)
+   * Q3: 右下角 (+x, -y) = hPositive(东) + vNegative(南)
+   *
+   * 每个象限有效的前提：该象限对角位置存在交点（形成完整的四边形区域）
+   * Q0对角交点的特征：在 hPositive 的纵向路上（东边的纵向路），在 vPositive 的横向路上（北边的横向路）
    */
   getValidQuadrants(
     neighbors: { vPositive: Intersection | null; vNegative: Intersection | null; hPositive: Intersection | null; hNegative: Intersection | null },
@@ -659,24 +672,28 @@ export class IntersectionProcessor {
   ): number[] {
     const valid: number[] = [];
 
-    // Q0: vPositive + hPositive
+    // Q0: 右上角 (+x, +y) = hPositive(东) + vPositive(北)
+    // 对角交点应该在：东边的纵向路(hPositive.road_v_id) 和 北边的横向路(vPositive.road_h_id) 的交点
     if (neighbors.vPositive && neighbors.hPositive) {
-      const key = `${neighbors.vPositive.road_v_id}:${neighbors.hPositive.road_h_id}`;
+      const key = `${neighbors.hPositive.road_v_id}:${neighbors.vPositive.road_h_id}`;
       if (index.byRoads.has(key)) valid.push(0);
     }
-    // Q1: vNegative + hPositive
-    if (neighbors.vNegative && neighbors.hPositive) {
-      const key = `${neighbors.vNegative.road_v_id}:${neighbors.hPositive.road_h_id}`;
+    // Q1: 左上角 (-x, +y) = hNegative(西) + vPositive(北)
+    // 对角交点应该在：西边的纵向路(hNegative.road_v_id) 和 北边的横向路(vPositive.road_h_id) 的交点
+    if (neighbors.vPositive && neighbors.hNegative) {
+      const key = `${neighbors.hNegative.road_v_id}:${neighbors.vPositive.road_h_id}`;
       if (index.byRoads.has(key)) valid.push(1);
     }
-    // Q2: vNegative + hNegative
+    // Q2: 左下角 (-x, -y) = hNegative(西) + vNegative(南)
+    // 对角交点应该在：西边的纵向路(hNegative.road_v_id) 和 南边的横向路(vNegative.road_h_id) 的交点
     if (neighbors.vNegative && neighbors.hNegative) {
-      const key = `${neighbors.vNegative.road_v_id}:${neighbors.hNegative.road_h_id}`;
+      const key = `${neighbors.hNegative.road_v_id}:${neighbors.vNegative.road_h_id}`;
       if (index.byRoads.has(key)) valid.push(2);
     }
-    // Q3: vPositive + hNegative
-    if (neighbors.vPositive && neighbors.hNegative) {
-      const key = `${neighbors.vPositive.road_v_id}:${neighbors.hNegative.road_h_id}`;
+    // Q3: 右下角 (+x, -y) = hPositive(东) + vNegative(南)
+    // 对角交点应该在：东边的纵向路(hPositive.road_v_id) 和 南边的横向路(vNegative.road_h_id) 的交点
+    if (neighbors.vNegative && neighbors.hPositive) {
+      const key = `${neighbors.hPositive.road_v_id}:${neighbors.vNegative.road_h_id}`;
       if (index.byRoads.has(key)) valid.push(3);
     }
 
@@ -699,18 +716,22 @@ export class IntersectionProcessor {
       const numQ = validQuadrants.length;
       const type = numQ === 1 ? 'L' : numQ === 2 ? 'T' : numQ === 4 ? 'cross' : `partial_${numQ}`;
 
+      // 坐标系定义：横向东为+x，纵向北为+y
+      // vPositive = 北(纵向正方向), vNegative = 南(纵向负方向)
+      // hPositive = 东(横向正方向), hNegative = 西(横向负方向)
+      // top/bottom 是纵向邻居，left/right 是横向邻居
       return {
         ...inter,
         type: type as any,
         neighbors: {
-          top: neighbors.hPositive?.id,
-          bottom: neighbors.hNegative?.id,
-          left: neighbors.vNegative?.id,
-          right: neighbors.vPositive?.id,
-          top_road_id: neighbors.hPositive?.road_h_id,
-          bottom_road_id: neighbors.hNegative?.road_h_id,
-          left_road_id: neighbors.vNegative?.road_v_id,
-          right_road_id: neighbors.vPositive?.road_v_id
+          top: neighbors.vPositive?.id,           // 北
+          bottom: neighbors.vNegative?.id,        // 南
+          left: neighbors.hNegative?.id,          // 西
+          right: neighbors.hPositive?.id,         // 东
+          top_road_id: neighbors.vPositive?.road_v_id,    // 北边的纵向路
+          bottom_road_id: neighbors.vNegative?.road_v_id, // 南边的纵向路
+          left_road_id: neighbors.hNegative?.road_h_id,   // 西边的横向路
+          right_road_id: neighbors.hPositive?.road_h_id   // 东边的横向路
         },
         valid_quadrants: validQuadrants
       };
@@ -752,15 +773,16 @@ export class TurnArcGenerator {
     const dhY = Math.sin(roadHAngle);
 
     // 象限符号
-    // 象限0：右上角转弯，圆心在(外部右上)
-    // 象限1：左上角转弯，圆心在(外部左上)
-    // 象限2：左下角转弯，圆心在(外部左下)
-    // 象限3：右下角转弯，圆心在(外部右下)
+    // 坐标系定义：横向东为+x，纵向北为+y
+    // Q0: 右上角(+x,+y) = 东+北 → signV=+1(北), signH=+1(东)
+    // Q1: 左上角(-x,+y) = 西+北 → signV=+1(北), signH=-1(西)
+    // Q2: 左下角(-x,-y) = 西+南 → signV=-1(南), signH=-1(西)
+    // Q3: 右下角(+x,-y) = 东+南 → signV=-1(南), signH=+1(东)
     const quadrantSigns: Record<number, [number, number]> = {
-      0: [1, 1],   // 右上：signV=+1(向上), signH=+1(向右), 圆心在(外部右上)
-      1: [-1, 1],  // 左上：signV=-1(向下错!应该是+1), signH=+1(向左错!应该是-1)
-      2: [-1, -1], // 左下：signV=-1(向下), signH=-1(向左), 圆心在(外部左下)
-      3: [1, -1]   // 右下：signV=+1(向上错!应该是-1), signH=-1(向右错!应该是+1)
+      0: [1, 1],   // Q0: 右上角，signV=+1(北), signH=+1(东)
+      1: [1, -1],  // Q1: 左上角，signV=+1(北), signH=-1(西)
+      2: [-1, -1], // Q2: 左下角，signV=-1(南), signH=-1(西)
+      3: [-1, 1]   // Q3: 右下角，signV=-1(南), signH=+1(东)
     };
     const [signV, signH] = quadrantSigns[quadrant];
 
