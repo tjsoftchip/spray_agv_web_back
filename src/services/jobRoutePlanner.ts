@@ -1,12 +1,12 @@
 /**
  * 作业路线规划器
- * 按照ROUTE_PLANNING_DESIGN.md设计文档实现
+ * 按照 ROUTE_PLANNING_LOGIC.md 设计文档实现
  *
  * 核心功能:
- * 1. 梁位顺序优化（最近邻算法）
- * 2. 单梁位绕行路线生成
- * 3. 梁位间过渡路线规划（A*无掉头）
- * 4. 喷淋模式自动判断
+ * 1. 梁位顺序优化（最近邻算法 + 分组优先）
+ * 2. 单梁位顺时针绕行路线生成
+ * 3. 共享路段喷淋状态管理
+ * 4. 梁位间过渡路线规划
  * 5. yaw角动态计算
  * 6. 生成route_executor格式路线
  */
@@ -175,6 +175,104 @@ export interface RoadSegment {
 }
 
 // ============================================================
+// 喷淋状态管理器
+// ============================================================
+
+interface SharedRoadInfo {
+  roadId: string;
+  beamIds: string[];
+  sprayedSides: 'none' | 'left' | 'right' | 'both';
+}
+
+class SprayStatusManager {
+  private roadStatus = new Map<string, SharedRoadInfo>();
+  private sprayedRoads = new Set<string>();
+
+  /**
+   * 注册共享路段
+   */
+  registerSharedRoad(roadId: string, beamIds: string[]): void {
+    if (!this.roadStatus.has(roadId)) {
+      this.roadStatus.set(roadId, {
+        roadId,
+        beamIds,
+        sprayedSides: 'none'
+      });
+    }
+  }
+
+  /**
+   * 获取喷淋模式
+   */
+  getSprayMode(roadId: string, currentBeamId: string): SprayMode {
+    const sharedInfo = this.roadStatus.get(roadId);
+
+    if (!sharedInfo) {
+      // 非共享路段，检查是否已喷淋
+      if (this.sprayedRoads.has(roadId)) {
+        return 'none';
+      }
+      this.sprayedRoads.add(roadId);
+      return 'right_only';
+    }
+
+    // 共享路段
+    switch (sharedInfo.sprayedSides) {
+      case 'none':
+        // 第一次访问，双侧喷淋
+        sharedInfo.sprayedSides = 'both';
+        this.sprayedRoads.add(roadId);
+        return 'both';
+
+      case 'both':
+        // 已双侧喷淋，不喷淋
+        return 'none';
+
+      default:
+        return 'none';
+    }
+  }
+
+  /**
+   * 标记道路已喷淋
+   */
+  markRoadSprayed(roadId: string): void {
+    this.sprayedRoads.add(roadId);
+  }
+
+  /**
+   * 检查道路是否已喷淋
+   */
+  isRoadSprayed(roadId: string): boolean {
+    return this.sprayedRoads.has(roadId);
+  }
+
+  /**
+   * 重置状态
+   */
+  reset(): void {
+    this.roadStatus.clear();
+    this.sprayedRoads.clear();
+  }
+}
+
+// ============================================================
+// 梁位布局分析
+// ============================================================
+
+interface BeamLayout {
+  beams: BeamPosition[];
+  rowCount: number;
+  columnCounts: number[];
+  isSingleBeam: boolean;
+  isSingleRow: boolean;
+  isSingleColumn: boolean;
+  isGrid: boolean;
+  adjacencyMap: Map<string, string[]>;
+  rows: Map<string, BeamPosition[]>;
+}
+
+// ============================================================
 // 辅助函数
 // ============================================================
 
@@ -190,6 +288,29 @@ function normalizeAngle(angle: number): number {
 
 function calculateAngle(from: MapPoint, to: MapPoint): number {
   return Math.atan2(to.y - from.y, to.x - from.x);
+}
+
+/**
+ * 根据行驶方向计算yaw角
+ * yaw = 0 朝北, π/2 朝东, π 朝南, -π/2 朝西
+ */
+function directionToYaw(direction: 'north' | 'south' | 'east' | 'west'): number {
+  switch (direction) {
+    case 'north': return 0;
+    case 'east': return Math.PI / 2;
+    case 'south': return Math.PI;
+    case 'west': return -Math.PI / 2;
+  }
+}
+
+/**
+ * 根据两点计算yaw角（转换为北向为0的坐标系）
+ */
+function calculateYawFromPoints(from: MapPoint, to: MapPoint): number {
+  // atan2(dx, dy) 转换为北向坐标系
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  return Math.atan2(dx, dy);  // 北向为0，东向为π/2
 }
 
 // ============================================================
@@ -208,9 +329,14 @@ export class JobRoutePlanner {
   private interById: Map<string, Intersection> = new Map();
   private arcById: Map<string, TurnArc> = new Map();
   private beamById: Map<string, BeamPosition> = new Map();
-  private interByRoads: Map<string, Intersection> = new Map(); // "roadV:roadH" -> inter
+  private interByRoads: Map<string, Intersection> = new Map();
 
-  constructor() {}
+  // 喷淋状态管理
+  private sprayManager: SprayStatusManager;
+
+  constructor() {
+    this.sprayManager = new SprayStatusManager();
+  }
 
   /**
    * 加载数据文件
@@ -256,7 +382,6 @@ export class JobRoutePlanner {
   private parseSupplyStationFromYaml(yamlPath: string): SupplyStation | null {
     try {
       const content = fs.readFileSync(yamlPath, 'utf-8');
-      // 简单解析YAML（不需要完整YAML解析器）
       const getValue = (key: string): string | null => {
         const match = content.match(new RegExp(`${key}:\\s*(.+)`));
         return match ? match[1].trim() : null;
@@ -327,40 +452,53 @@ export class JobRoutePlanner {
       throw new Error('没有有效的梁位ID');
     }
 
-    // 2. 优化梁位顺序
-    const orderedBeamIds = this.optimizeBeamSequence(validBeamIds);
-    console.log(`[JobRoutePlanner] 优化后的梁位顺序: ${orderedBeamIds.join(' → ')}`);
+    const beams = validBeamIds.map(id => this.beamById.get(id)!);
 
-    // 3. 生成路线段
+    // 2. 分析梁位布局
+    const layout = this.analyzeLayout(beams);
+    console.log(`[JobRoutePlanner] 布局分析: ${layout.rowCount}行, 单行=${layout.isSingleRow}, 单列=${layout.isSingleColumn}`);
+
+    // 3. 确定梁位访问顺序
+    const supplyPos = this.supplyStation?.position || { x: 0, y: 0 };
+    const orderedBeams = this.optimizeBeamSequence(beams, supplyPos, layout);
+    console.log(`[JobRoutePlanner] 访问顺序: ${orderedBeams.map(b => b.id).join(' → ')}`);
+
+    // 4. 初始化喷淋状态管理器
+    this.sprayManager.reset();
+    this.registerSharedRoads(orderedBeams);
+
+    // 5. 生成路线段
     const segments: RouteSegment[] = [];
     let totalLength = 0;
     let sprayLength = 0;
     let transitLength = 0;
+    let currentPos = supplyPos;
 
-    // 3.1 从补给站到第一个梁位
-    if (this.supplyStation && orderedBeamIds.length > 0) {
-      const firstBeam = this.beamById.get(orderedBeamIds[0]);
-      if (firstBeam) {
-        console.log(`[JobRoutePlanner] 规划补给站 → ${orderedBeamIds[0]}`);
-        const transitSegments = this.planTransitFromSupply(firstBeam);
-        for (const seg of transitSegments) {
-          seg.id = `seg_${segments.length}`;
-          segments.push(seg);
-          totalLength += this.calculateSegmentLength(seg);
-          transitLength += this.calculateSegmentLength(seg);
-        }
+    // 5.1 从补给站到第一个梁位
+    if (orderedBeams.length > 0) {
+      const firstBeam = orderedBeams[0];
+      const startPoint = this.getCircuitStartPoint(firstBeam, supplyPos);
+
+      console.log(`[JobRoutePlanner] 规划补给站 → ${firstBeam.id}`);
+      const transitSegments = this.planTransitSegment(currentPos, startPoint);
+      for (const seg of transitSegments) {
+        seg.id = `seg_${segments.length}`;
+        segments.push(seg);
+        const len = this.calculateSegmentLength(seg);
+        totalLength += len;
+        transitLength += len;
       }
+      currentPos = startPoint;
     }
 
-    // 3.2 为每个梁位生成绕行路线
-    for (let i = 0; i < orderedBeamIds.length; i++) {
-      const beamId = orderedBeamIds[i];
-      const beam = this.beamById.get(beamId);
-      if (!beam) continue;
+    // 5.2 逐个梁位规划
+    for (let i = 0; i < orderedBeams.length; i++) {
+      const beam = orderedBeams[i];
+      console.log(`[JobRoutePlanner] 生成梁位 ${beam.id} 顺时针绕行路线`);
 
-      console.log(`[JobRoutePlanner] 生成梁位 ${beamId} 绕行路线`);
-      const beamSegments = this.planBeamCircuitRoute(beam, orderedBeamIds);
-      for (const seg of beamSegments) {
+      // 规划顺时针绕行
+      const circuitSegments = this.planClockwiseCircuit(beam, currentPos);
+      for (const seg of circuitSegments) {
         seg.id = `seg_${segments.length}`;
         segments.push(seg);
         const len = this.calculateSegmentLength(seg);
@@ -372,31 +510,16 @@ export class JobRoutePlanner {
         }
       }
 
-      // 3.3 到下一个梁位的过渡
-      if (i < orderedBeamIds.length - 1) {
-        const nextBeamId = orderedBeamIds[i + 1];
-        const nextBeam = this.beamById.get(nextBeamId);
-        if (nextBeam) {
-          console.log(`[JobRoutePlanner] 规划 ${beamId} → ${nextBeamId} 过渡`);
-          const transitSegments = this.planTransitRoute(beam, nextBeam);
-          for (const seg of transitSegments) {
-            seg.id = `seg_${segments.length}`;
-            segments.push(seg);
-            const len = this.calculateSegmentLength(seg);
-            totalLength += len;
-            transitLength += len;
-          }
-        }
-      }
-    }
+      // 更新当前位置为绕行终点（西南角）
+      currentPos = this.getCircuitEndPoint(beam);
 
-    // 3.4 返回补给站
-    if (this.supplyStation && orderedBeamIds.length > 0) {
-      const lastBeamId = orderedBeamIds[orderedBeamIds.length - 1];
-      const lastBeam = this.beamById.get(lastBeamId);
-      if (lastBeam) {
-        console.log(`[JobRoutePlanner] 规划 ${lastBeamId} → 补给站`);
-        const transitSegments = this.planTransitToSupply(lastBeam);
+      // 规划到下一个梁位的过渡
+      if (i < orderedBeams.length - 1) {
+        const nextBeam = orderedBeams[i + 1];
+        const nextStartPoint = this.getCircuitStartPoint(nextBeam, currentPos);
+        console.log(`[JobRoutePlanner] 规划过渡 ${beam.id} → ${nextBeam.id}`);
+
+        const transitSegments = this.planTransitSegment(currentPos, nextStartPoint);
         for (const seg of transitSegments) {
           seg.id = `seg_${segments.length}`;
           segments.push(seg);
@@ -404,17 +527,34 @@ export class JobRoutePlanner {
           totalLength += len;
           transitLength += len;
         }
+        currentPos = nextStartPoint;
       }
     }
 
-    // 4. 计算统计信息
+    // 5.3 返回补给站
+    if (orderedBeams.length > 0) {
+      console.log(`[JobRoutePlanner] 规划返回补给站`);
+      const transitSegments = this.planTransitSegment(currentPos, supplyPos);
+      for (const seg of transitSegments) {
+        seg.id = `seg_${segments.length}`;
+        segments.push(seg);
+        const len = this.calculateSegmentLength(seg);
+        totalLength += len;
+        transitLength += len;
+      }
+    }
+
+    // 6. 验证路线连续性
+    this.validateRoute(segments);
+
+    // 7. 计算统计信息
     const estimatedTime = this.calculateEstimatedTime(totalLength, sprayLength, segments.length);
 
     const route: JobRoute = {
       id: `route_${Date.now()}`,
       name: `喷淋路线 ${new Date().toLocaleString()}`,
       created: new Date().toISOString(),
-      beam_sequence: orderedBeamIds,
+      beam_sequence: orderedBeams.map(b => b.id),
       segments,
       statistics: {
         total_length: Math.round(totalLength * 100) / 100,
@@ -424,91 +564,378 @@ export class JobRoutePlanner {
       }
     };
 
-    console.log(`[JobRoutePlanner] 路线规划完成: ${segments.length}个路段, 总长度${route.statistics.total_length}m`);
+    console.log(`[JobRoutePlanner] 路线规划完成: ${segments.length}个路段, 总长度${route.statistics.total_length}m, 喷淋${route.statistics.spray_length}m`);
     return route;
   }
 
   /**
-   * 梁位顺序优化（最近邻算法）
+   * 分析梁位布局
    */
-  private optimizeBeamSequence(beamIds: string[]): string[] {
-    if (beamIds.length <= 1) return [...beamIds];
+  private analyzeLayout(beams: BeamPosition[]): BeamLayout {
+    const rows = new Map<string, BeamPosition[]>();
 
-    const remaining = [...beamIds];
-    const ordered: string[] = [];
-
-    // 起点为补给站位置（原点）
-    let currentPos: MapPoint = this.supplyStation?.position || { x: 0, y: 0 };
-
-    while (remaining.length > 0) {
-      let nearestIdx = 0;
-      let minDist = Infinity;
-
-      for (let i = 0; i < remaining.length; i++) {
-        const beam = this.beamById.get(remaining[i]);
-        if (beam) {
-          const dist = distance(currentPos, beam.center);
-          if (dist < minDist) {
-            minDist = dist;
-            nearestIdx = i;
-          }
-        }
+    for (const beam of beams) {
+      const rowKey = beam.row;
+      if (!rows.has(rowKey)) {
+        rows.set(rowKey, []);
       }
+      rows.get(rowKey)!.push(beam);
+    }
 
-      const nearestId = remaining.splice(nearestIdx, 1)[0];
-      ordered.push(nearestId);
+    // 每行内按列排序
+    for (const [_, rowBeams] of rows) {
+      rowBeams.sort((a, b) => a.col - b.col);
+    }
 
-      const nearestBeam = this.beamById.get(nearestId);
-      if (nearestBeam) {
-        currentPos = nearestBeam.center;
+    // 构建邻接关系
+    const adjacencyMap = new Map<string, string[]>();
+    for (const beam of beams) {
+      const neighbors: string[] = [];
+      if (beam.neighbors?.left && beams.some(b => b.id === beam.neighbors!.left)) {
+        neighbors.push(beam.neighbors.left);
+      }
+      if (beam.neighbors?.right && beams.some(b => b.id === beam.neighbors!.right)) {
+        neighbors.push(beam.neighbors.right);
+      }
+      if (beam.neighbors?.top && beams.some(b => b.id === beam.neighbors!.top)) {
+        neighbors.push(beam.neighbors.top);
+      }
+      if (beam.neighbors?.bottom && beams.some(b => b.id === beam.neighbors!.bottom)) {
+        neighbors.push(beam.neighbors.bottom);
+      }
+      adjacencyMap.set(beam.id, neighbors);
+    }
+
+    const columnCounts = Array.from(rows.values()).map(r => r.length);
+
+    return {
+      beams,
+      rowCount: rows.size,
+      columnCounts,
+      isSingleBeam: beams.length === 1,
+      isSingleRow: rows.size === 1 && beams.length > 1,
+      isSingleColumn: beams.every(b => (rows.get(b.row)?.length ?? 0) === 1),
+      isGrid: rows.size > 1 && columnCounts.every(c => c > 1),
+      adjacencyMap,
+      rows
+    };
+  }
+
+  /**
+   * 确定梁位访问顺序
+   */
+  private optimizeBeamSequence(
+    beams: BeamPosition[],
+    supplyStation: MapPoint,
+    layout: BeamLayout
+  ): BeamPosition[] {
+    if (layout.isSingleBeam) {
+      return beams;
+    }
+
+    if (layout.isSingleRow) {
+      return this.optimizeSingleRow(beams, supplyStation);
+    }
+
+    if (layout.isSingleColumn) {
+      return this.optimizeSingleColumn(beams, supplyStation);
+    }
+
+    // 多行多列：行优先策略
+    return this.optimizeGrid(beams, supplyStation, layout);
+  }
+
+  /**
+   * 单行优化：根据补给站位置决定遍历方向
+   */
+  private optimizeSingleRow(beams: BeamPosition[], supplyStation: MapPoint): BeamPosition[] {
+    // 按列排序
+    const sorted = [...beams].sort((a, b) => a.col - b.col);
+
+    // 计算行中心
+    const rowCenterY = beams[0].center.y;
+
+    // 判断补给站在行左侧还是右侧
+    const supplyX = supplyStation.x;
+    const minX = Math.min(...beams.map(b => b.center.x));
+    const maxX = Math.max(...beams.map(b => b.center.x));
+    const supplyOnLeft = supplyX <= (minX + maxX) / 2;
+
+    // 如果补给站在右侧，从右向左遍历
+    if (supplyOnLeft) {
+      return sorted;
+    } else {
+      return sorted.reverse();
+    }
+  }
+
+  /**
+   * 单列优化：从近到远
+   */
+  private optimizeSingleColumn(beams: BeamPosition[], supplyStation: MapPoint): BeamPosition[] {
+    const supplyY = supplyStation.y;
+    const sorted = [...beams].sort((a, b) => {
+      const distA = Math.abs(a.center.y - supplyY);
+      const distB = Math.abs(b.center.y - supplyY);
+      return distA - distB;
+    });
+    return sorted;
+  }
+
+  /**
+   * 多行多列优化：行优先策略
+   */
+  private optimizeGrid(
+    beams: BeamPosition[],
+    supplyStation: MapPoint,
+    layout: BeamLayout
+  ): BeamPosition[] {
+    const rows = layout.rows;
+    const ordered: BeamPosition[] = [];
+
+    // 按行中心距离补给站的远近排序
+    const sortedRows = Array.from(rows.entries())
+      .sort((a, b) => {
+        const centerA = this.getRowCenter(a[1]);
+        const centerB = this.getRowCenter(b[1]);
+        const distA = distance(centerA, supplyStation);
+        const distB = distance(centerB, supplyStation);
+        return distA - distB;
+      });
+
+    for (const [_, rowBeams] of sortedRows) {
+      // 根据补给站位置决定行内遍历方向
+      const direction = this.determineRowDirection(rowBeams, supplyStation);
+      if (direction === 'east-to-west') {
+        ordered.push(...[...rowBeams].reverse());
+      } else {
+        ordered.push(...rowBeams);
       }
     }
 
     return ordered;
   }
 
+  private getRowCenter(rowBeams: BeamPosition[]): MapPoint {
+    const sumX = rowBeams.reduce((sum, b) => sum + b.center.x, 0);
+    const sumY = rowBeams.reduce((sum, b) => sum + b.center.y, 0);
+    return { x: sumX / rowBeams.length, y: sumY / rowBeams.length };
+  }
+
+  private determineRowDirection(rowBeams: BeamPosition[], supplyStation: MapPoint): 'west-to-east' | 'east-to-west' {
+    const minX = Math.min(...rowBeams.map(b => b.center.x));
+    const maxX = Math.max(...rowBeams.map(b => b.center.x));
+    const supplyX = supplyStation.x;
+
+    return supplyX <= (minX + maxX) / 2 ? 'west-to-east' : 'east-to-west';
+  }
+
   /**
-   * 规划单梁位绕行路线
+   * 注册共享路段
    */
-  private planBeamCircuitRoute(beam: BeamPosition, allSelectedBeamIds: string[]): RouteSegment[] {
+  private registerSharedRoads(beams: BeamPosition[]): void {
+    for (const beam of beams) {
+      // 检查每个边界的相邻梁位
+      const neighbors = beam.neighbors || {};
+
+      // 东边界（右侧相邻）
+      if (neighbors.right && beams.some(b => b.id === neighbors.right)) {
+        const sharedRoadId = beam.boundaries.east;
+        this.sprayManager.registerSharedRoad(sharedRoadId, [beam.id, neighbors.right]);
+      }
+
+      // 西边界（左侧相邻）
+      if (neighbors.left && beams.some(b => b.id === neighbors.left)) {
+        const sharedRoadId = beam.boundaries.west;
+        this.sprayManager.registerSharedRoad(sharedRoadId, [beam.id, neighbors.left]);
+      }
+
+      // 北边界（上方相邻）
+      if (neighbors.top && beams.some(b => b.id === neighbors.top)) {
+        const sharedRoadId = beam.boundaries.north;
+        this.sprayManager.registerSharedRoad(sharedRoadId, [beam.id, neighbors.top]);
+      }
+
+      // 南边界（下方相邻）
+      if (neighbors.bottom && beams.some(b => b.id === neighbors.bottom)) {
+        const sharedRoadId = beam.boundaries.south;
+        this.sprayManager.registerSharedRoad(sharedRoadId, [beam.id, neighbors.bottom]);
+      }
+    }
+  }
+
+  /**
+   * 获取梁位绕行起点（西南角附近）
+   */
+  private getCircuitStartPoint(beam: BeamPosition, fromPos: MapPoint): MapPoint {
+    // 根据补给站位置选择最近角落
+    const corners = this.getBeamCorners(beam);
+
+    let nearestCorner = corners.sw;
+    let minDist = distance(fromPos, corners.sw);
+
+    if (distance(fromPos, corners.nw) < minDist) {
+      minDist = distance(fromPos, corners.nw);
+      nearestCorner = corners.nw;
+    }
+    if (distance(fromPos, corners.ne) < minDist) {
+      minDist = distance(fromPos, corners.ne);
+      nearestCorner = corners.ne;
+    }
+    if (distance(fromPos, corners.se) < minDist) {
+      nearestCorner = corners.se;
+    }
+
+    return nearestCorner;
+  }
+
+  /**
+   * 获取梁位绕行终点（西南角）
+   */
+  private getCircuitEndPoint(beam: BeamPosition): MapPoint {
+    const corners = this.getBeamCorners(beam);
+    return corners.sw;
+  }
+
+  /**
+   * 获取梁位四个角
+   */
+  private getBeamCorners(beam: BeamPosition): { nw: MapPoint; ne: MapPoint; sw: MapPoint; se: MapPoint } {
+    const corners = { nw: { x: 0, y: 0 }, ne: { x: 0, y: 0 }, sw: { x: 0, y: 0 }, se: { x: 0, y: 0 } };
+
+    // 从corner_intersections获取角点坐标
+    const interIds = beam.corner_intersections;
+    if (interIds && interIds.length >= 4) {
+      // 假设顺序为：西北、东北、西南、东南
+      const nwInter = this.interById.get(interIds[0]);
+      const neInter = this.interById.get(interIds[1]);
+      const swInter = this.interById.get(interIds[2]);
+      const seInter = this.interById.get(interIds[3]);
+
+      if (nwInter) corners.nw = nwInter.center.map_xy;
+      if (neInter) corners.ne = neInter.center.map_xy;
+      if (swInter) corners.sw = swInter.center.map_xy;
+      if (seInter) corners.se = seInter.center.map_xy;
+    }
+
+    return corners;
+  }
+
+  /**
+   * 规划顺时针绕行路线
+   * 顺时针顺序：西(向北) → 北(向东) → 东(向南) → 南(向西)
+   */
+  private planClockwiseCircuit(beam: BeamPosition, startPos: MapPoint): RouteSegment[] {
     const segments: RouteSegment[] = [];
 
-    // 获取梁位四条边界的道路
-    const { north, south, east, west } = beam.boundaries;
+    // 确定起始边界
+    const startBoundary = this.findNearestBoundary(beam, startPos);
+    console.log(`[planClockwiseCircuit] 梁位 ${beam.id}, 起始边界: ${startBoundary}`);
 
-    // 为每条边界道路生成路段
-    const roadConfigs: Array<{ roadId: string | undefined; side: 'north' | 'south' | 'east' | 'west' }> = [
-      { roadId: north, side: 'north' },
-      { roadId: south, side: 'south' },
-      { roadId: east, side: 'east' },
-      { roadId: west, side: 'west' }
-    ];
+    // 顺时针顺序
+    const clockwiseOrder: Array<'west' | 'north' | 'east' | 'south'> = ['west', 'north', 'east', 'south'];
+    const startIndex = clockwiseOrder.indexOf(startBoundary);
+    const orderedBoundaries: Array<'west' | 'north' | 'east' | 'south'> = [];
+    for (let i = 0; i < 4; i++) {
+      orderedBoundaries.push(clockwiseOrder[(startIndex + i) % 4]);
+    }
 
-    for (const config of roadConfigs) {
-      if (!config.roadId) continue;
+    console.log(`[planClockwiseCircuit] 绕行顺序: ${orderedBoundaries.join(' → ')}`);
 
-      const road = this.roadById.get(config.roadId);
-      if (!road) continue;
+    let lastEndPoint: MapPoint | null = null;
+    let lastEndInter: Intersection | null = null;
 
-      // 确定喷淋模式
-      const sprayMode = this.determineSprayMode(config.roadId, beam.id, config.side, allSelectedBeamIds);
+    for (let i = 0; i < orderedBoundaries.length; i++) {
+      const boundary = orderedBoundaries[i];
+      const roadId = beam.boundaries[boundary];
 
-      // 按梁位分割道路
-      const roadSegments = this.splitRoadByBeam(road, beam);
+      if (!roadId) {
+        console.warn(`[planClockwiseCircuit] 梁位 ${beam.id} 缺少 ${boundary} 边界道路`);
+        continue;
+      }
 
-      for (const roadSeg of roadSegments) {
-        const waypoints = this.generateWaypointsForRoadSegment(roadSeg, road.type);
+      const road = this.roadById.get(roadId);
+      if (!road) {
+        console.warn(`[planClockwiseCircuit] 道路 ${roadId} 不存在`);
+        continue;
+      }
 
-        segments.push({
-          id: '', // 将在外部设置
-          type: 'road',
-          road_id: road.id,
-          direction: this.determineDirection(roadSeg, road.type),
-          beam_id: beam.id,
-          side: config.side,
-          spray_mode: sprayMode,
-          waypoints
-        });
+      // 获取梁位边界内的道路段
+      const roadSegment = this.getBeamBoundarySegment(road, beam);
+      if (!roadSegment) {
+        console.warn(`[planClockwiseCircuit] 无法获取道路段`);
+        continue;
+      }
+
+      // 确定行驶方向
+      const direction = this.getClockwiseDirection(boundary, road);
+
+      // 排序道路点
+      const roadPoints = direction === 'forward'
+        ? [...roadSegment.points]
+        : [...roadSegment.points].reverse();
+
+      // 生成转弯弧
+      if (lastEndPoint && lastEndInter) {
+        const turnArc = this.generateTurnArcSegment(
+          lastEndPoint,
+          lastEndInter,
+          roadPoints[0],
+          boundary
+        );
+        if (turnArc) {
+          turnArc.id = `seg_${segments.length}`;
+          segments.push(turnArc);
+        }
+      }
+
+      // 获取喷淋模式
+      const sprayMode = this.sprayManager.getSprayMode(roadId, beam.id);
+      console.log(`[planClockwiseCircuit] 边界 ${boundary}, 道路 ${roadId}, 喷淋模式: ${sprayMode}`);
+
+      // 生成航点
+      const waypoints = this.generateWaypointsWithYaw(roadPoints);
+
+      segments.push({
+        id: `seg_${segments.length}`,
+        type: 'road',
+        road_id: road.id,
+        direction,
+        beam_id: beam.id,
+        side: boundary,
+        spray_mode: sprayMode,
+        waypoints
+      });
+
+      lastEndPoint = roadPoints[roadPoints.length - 1];
+      lastEndInter = this.findEndIntersection(road, roadPoints, beam);
+    }
+
+    // 最后的转弯弧（从最后一条边界回到起点）
+    if (lastEndPoint && lastEndInter) {
+      const firstBoundary = orderedBoundaries[0];
+      const firstRoadId = beam.boundaries[firstBoundary];
+      const firstRoad = firstRoadId ? this.roadById.get(firstRoadId) : null;
+
+      if (firstRoad) {
+        const firstSegment = this.getBeamBoundarySegment(firstRoad, beam);
+        if (firstSegment) {
+          const firstDirection = this.getClockwiseDirection(firstBoundary, firstRoad);
+          const firstPoints = firstDirection === 'forward'
+            ? [...firstSegment.points]
+            : [...firstSegment.points].reverse();
+
+          const turnArc = this.generateTurnArcSegment(
+            lastEndPoint,
+            lastEndInter,
+            firstPoints[0],
+            firstBoundary
+          );
+          if (turnArc) {
+            turnArc.id = `seg_${segments.length}`;
+            segments.push(turnArc);
+          }
+        }
       }
     }
 
@@ -516,11 +943,64 @@ export class JobRoutePlanner {
   }
 
   /**
-   * 按梁位边界分割道路
+   * 找到离补给站最近的梁位边界
    */
-  private splitRoadByBeam(road: Road, beam: BeamPosition): RoadSegment[] {
-    const segments: RoadSegment[] = [];
+  private findNearestBoundary(beam: BeamPosition, supplyPos: MapPoint): 'north' | 'south' | 'east' | 'west' {
+    const dx = supplyPos.x - beam.center.x;
+    const dy = supplyPos.y - beam.center.y;
 
+    console.log(`[findNearestBoundary] 补给站相对梁位: dx=${dx.toFixed(2)}, dy=${dy.toFixed(2)}`);
+
+    // 根据象限确定起始边界
+    // 顺时针绕行，从最近的边界开始
+    if (dx <= 0 && dy <= 0) {
+      return 'west';   // 西南角，从西边界开始
+    } else if (dx > 0 && dy <= 0) {
+      return 'south';  // 东南角，从南边界开始
+    } else if (dx > 0 && dy > 0) {
+      return 'east';   // 东北角，从东边界开始
+    } else {
+      return 'north';  // 西北角，从北边界开始
+    }
+  }
+
+  /**
+   * 获取顺时针绕行时的行驶方向
+   */
+  private getClockwiseDirection(boundary: 'north' | 'south' | 'east' | 'west', road: Road): 'forward' | 'backward' {
+    const points = road.points;
+    if (points.length < 2) return 'forward';
+
+    const startPoint = points[0].map_xy;
+    const endPoint = points[points.length - 1].map_xy;
+    const dx = endPoint.x - startPoint.x;
+    const dy = endPoint.y - startPoint.y;
+
+    // 顺时针绕行方向：
+    // - 西边界：向北行驶
+    // - 北边界：向东行驶
+    // - 东边界：向南行驶
+    // - 南边界：向西行驶
+
+    if (boundary === 'west') {
+      // 向北：如果道路forward是向北则forward，否则backward
+      return dy > 0 ? 'forward' : 'backward';
+    } else if (boundary === 'north') {
+      // 向东：如果道路forward是向东则forward，否则backward
+      return dx > 0 ? 'forward' : 'backward';
+    } else if (boundary === 'east') {
+      // 向南：如果道路forward是向南则forward，否则backward
+      return dy < 0 ? 'forward' : 'backward';
+    } else {
+      // 南边界：向西
+      return dx < 0 ? 'forward' : 'backward';
+    }
+  }
+
+  /**
+   * 获取梁位边界内的道路段
+   */
+  private getBeamBoundarySegment(road: Road, beam: BeamPosition): RoadSegment | null {
     // 找到与这条道路相关的梁位角点交叉点
     const relevantInters: Intersection[] = [];
     for (const interId of beam.corner_intersections) {
@@ -533,7 +1013,7 @@ export class JobRoutePlanner {
     if (relevantInters.length < 2) {
       // 如果找不到两个交叉点，使用整条道路
       const points = road.points.map(p => p.map_xy);
-      return [{
+      return {
         road_id: road.id,
         start_point: points[0],
         end_point: points[points.length - 1],
@@ -542,7 +1022,7 @@ export class JobRoutePlanner {
         beam_left_id: null,
         beam_right_id: null,
         points
-      }];
+      };
     }
 
     // 按道路方向排序交叉点
@@ -552,7 +1032,6 @@ export class JobRoutePlanner {
       return aProj - bProj;
     });
 
-    // 提取梁位边界内的道路点
     const startInter = relevantInters[0];
     const endInter = relevantInters[relevantInters.length - 1];
 
@@ -569,13 +1048,12 @@ export class JobRoutePlanner {
     }
 
     if (segmentPoints.length < 2) {
-      // 如果点数不足，使用交叉点之间的线性插值
       segmentPoints.length = 0;
       segmentPoints.push(startInter.center.map_xy);
       segmentPoints.push(endInter.center.map_xy);
     }
 
-    segments.push({
+    return {
       road_id: road.id,
       start_point: segmentPoints[0],
       end_point: segmentPoints[segmentPoints.length - 1],
@@ -584,9 +1062,108 @@ export class JobRoutePlanner {
       beam_left_id: null,
       beam_right_id: null,
       points: segmentPoints
-    });
+    };
+  }
 
-    return segments;
+  /**
+   * 生成带yaw角的航点
+   */
+  private generateWaypointsWithYaw(points: MapPoint[]): Waypoint[] {
+    const waypoints: Waypoint[] = [];
+
+    for (let i = 0; i < points.length; i++) {
+      const point = points[i];
+      let yaw: number;
+
+      if (i < points.length - 1) {
+        yaw = calculateYawFromPoints(point, points[i + 1]);
+      } else if (i > 0) {
+        yaw = calculateYawFromPoints(points[i - 1], point);
+      } else {
+        yaw = 0;
+      }
+
+      waypoints.push({
+        x: point.x,
+        y: point.y,
+        yaw: normalizeAngle(yaw)
+      });
+    }
+
+    return waypoints;
+  }
+
+  /**
+   * 生成转弯弧路段
+   */
+  private generateTurnArcSegment(
+    fromPoint: MapPoint,
+    fromInter: Intersection,
+    toPoint: MapPoint,
+    toBoundary: 'north' | 'south' | 'east' | 'west'
+  ): RouteSegment | null {
+    // 查找对应的转弯弧
+    for (const arc of this.turnArcs) {
+      if (arc.intersection_id === fromInter.id) {
+        // 使用转弯弧的点生成航点
+        const waypoints: Waypoint[] = arc.points.map(p => ({
+          x: p.map_xy.x,
+          y: p.map_xy.y,
+          yaw: 0
+        }));
+
+        // 计算yaw角
+        for (let i = 0; i < waypoints.length; i++) {
+          if (i < waypoints.length - 1) {
+            waypoints[i].yaw = normalizeAngle(calculateYawFromPoints(
+              { x: waypoints[i].x, y: waypoints[i].y },
+              { x: waypoints[i + 1].x, y: waypoints[i + 1].y }
+            ));
+          } else {
+            waypoints[i].yaw = waypoints[i - 1].yaw;
+          }
+        }
+
+        return {
+          id: '',
+          type: 'turn_arc',
+          arc_id: arc.id,
+          spray_mode: 'none',
+          waypoints
+        };
+      }
+    }
+
+    // 没找到转弯弧，生成直连
+    return this.createTransitSegment(fromPoint, toPoint);
+  }
+
+  /**
+   * 找到道路终点的交叉点
+   */
+  private findEndIntersection(road: Road, points: MapPoint[], beam: BeamPosition): Intersection | null {
+    const endPoint = points[points.length - 1];
+
+    for (const interId of beam.corner_intersections) {
+      const inter = this.interById.get(interId);
+      if (inter && inter.connected_roads.includes(road.id)) {
+        const dist = distance(endPoint, inter.center.map_xy);
+        if (dist < 2.0) {
+          return inter;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 规划过渡路段（两点之间）
+   */
+  private planTransitSegment(from: MapPoint, to: MapPoint): RouteSegment[] {
+    // 简单实现：直线连接
+    // 完整实现应该使用A*搜索道路网络
+    return [this.createTransitSegment(from, to)];
   }
 
   /**
@@ -603,7 +1180,6 @@ export class JobRoutePlanner {
       const p2 = points[i + 1].map_xy;
       const segLen = distance(p1, p2);
 
-      // 投影到线段
       const dx = p2.x - p1.x;
       const dy = p2.y - p1.y;
       const t = Math.max(0, Math.min(1, ((point.x - p1.x) * dx + (point.y - p1.y) * dy) / (segLen * segLen)));
@@ -624,461 +1200,6 @@ export class JobRoutePlanner {
   }
 
   /**
-   * 确定喷淋模式
-   */
-  private determineSprayMode(
-    roadId: string,
-    currentBeamId: string,
-    side: 'north' | 'south' | 'east' | 'west',
-    allSelectedBeamIds: string[]
-  ): SprayMode {
-    const currentBeam = this.beamById.get(currentBeamId);
-    if (!currentBeam) return 'none';
-
-    // 找到道路另一侧的梁位
-    let adjacentBeamId: string | undefined;
-    if (side === 'north' && currentBeam.neighbors?.top) {
-      adjacentBeamId = currentBeam.neighbors.top;
-    } else if (side === 'south' && currentBeam.neighbors?.bottom) {
-      adjacentBeamId = currentBeam.neighbors.bottom;
-    } else if (side === 'east' && currentBeam.neighbors?.right) {
-      adjacentBeamId = currentBeam.neighbors.right;
-    } else if (side === 'west' && currentBeam.neighbors?.left) {
-      adjacentBeamId = currentBeam.neighbors.left;
-    }
-
-    // 如果相邻梁位也被选中，则双侧喷淋
-    if (adjacentBeamId && allSelectedBeamIds.includes(adjacentBeamId)) {
-      return 'both';
-    }
-
-    // 否则单侧喷淋
-    // 根据道路方向和梁位位置确定左侧还是右侧
-    const road = this.roadById.get(roadId);
-    if (!road) return 'none';
-
-    if (road.type === 'longitudinal') {
-      // 纵向道路：东西两侧
-      if (side === 'east') return 'right_only';
-      if (side === 'west') return 'left_only';
-    } else {
-      // 横向道路：南北两侧
-      if (side === 'north') return 'right_only';
-      if (side === 'south') return 'left_only';
-    }
-
-    return 'none';
-  }
-
-  /**
-   * 确定行驶方向
-   */
-  private determineDirection(seg: RoadSegment, roadType: 'longitudinal' | 'horizontal'): 'forward' | 'backward' {
-    const dx = seg.end_point.x - seg.start_point.x;
-    const dy = seg.end_point.y - seg.start_point.y;
-
-    if (roadType === 'longitudinal') {
-      return dy >= 0 ? 'forward' : 'backward';
-    } else {
-      return dx >= 0 ? 'forward' : 'backward';
-    }
-  }
-
-  /**
-   * 为道路段生成航点
-   */
-  private generateWaypointsForRoadSegment(seg: RoadSegment, roadType: 'longitudinal' | 'horizontal'): Waypoint[] {
-    const waypoints: Waypoint[] = [];
-    const points = seg.points;
-
-    for (let i = 0; i < points.length; i++) {
-      const point = points[i];
-      let yaw: number;
-
-      if (i < points.length - 1) {
-        yaw = calculateAngle(point, points[i + 1]);
-      } else if (i > 0) {
-        yaw = calculateAngle(points[i - 1], point);
-      } else {
-        yaw = roadType === 'longitudinal' ? Math.PI / 2 : 0;
-      }
-
-      waypoints.push({
-        x: point.x,
-        y: point.y,
-        yaw: normalizeAngle(yaw)
-      });
-    }
-
-    return waypoints;
-  }
-
-  /**
-   * 规划梁位间过渡路线（A*无掉头）
-   */
-  private planTransitRoute(fromBeam: BeamPosition, toBeam: BeamPosition): RouteSegment[] {
-    // 简化实现：直接连接两个梁位中心
-    // 完整实现应该使用A*搜索道路网络
-    const segments: RouteSegment[] = [];
-
-    const fromCenter = fromBeam.center;
-    const toCenter = toBeam.center;
-
-    // 找到起始梁位最近的交叉点
-    const startInter = this.findNearestIntersection(fromCenter);
-    // 找到目标梁位最近的交叉点
-    const endInter = this.findNearestIntersection(toCenter);
-
-    if (!startInter || !endInter) {
-      // 无法找到交叉点，生成直线路线
-      segments.push(this.createTransitSegment(fromCenter, toCenter));
-      return segments;
-    }
-
-    // A*搜索路径
-    const path = this.astarNoUTurn(startInter.id, endInter.id);
-    if (path.length === 0) {
-      segments.push(this.createTransitSegment(fromCenter, toCenter));
-      return segments;
-    }
-
-    // 将路径转换为航点
-    for (let i = 0; i < path.length - 1; i++) {
-      const currentInter = this.interById.get(path[i]);
-      const nextInter = this.interById.get(path[i + 1]);
-
-      if (currentInter && nextInter) {
-        // 查找连接的道路
-        const road = this.findConnectingRoad(currentInter, nextInter);
-        if (road) {
-          const roadSeg = this.createRoadSegmentBetweenInters(road, currentInter, nextInter);
-          segments.push({
-            id: '',
-            type: 'road',
-            road_id: road.id,
-            spray_mode: 'none',
-            waypoints: this.generateWaypointsForRoadSegment(roadSeg, road.type)
-          });
-        } else {
-          // 使用转弯弧
-          segments.push(this.createTransitSegment(currentInter.center.map_xy, nextInter.center.map_xy));
-        }
-      }
-    }
-
-    return segments;
-  }
-
-  /**
-   * 从补给站到第一个梁位
-   */
-  private planTransitFromSupply(beam: BeamPosition): RouteSegment[] {
-    if (!this.supplyStation) {
-      return [this.createTransitSegment({ x: 0, y: 0 }, beam.center)];
-    }
-
-    // 从补给站入口交叉点出发
-    const entryInter = this.interById.get(this.supplyStation.entry_intersection_id);
-    const targetInter = this.findNearestIntersection(beam.center);
-
-    if (!entryInter || !targetInter) {
-      return [this.createTransitSegment(this.supplyStation.position, beam.center)];
-    }
-
-    // A*搜索路径
-    const path = this.astarNoUTurn(entryInter.id, targetInter.id);
-    if (path.length === 0) {
-      return [this.createTransitSegment(this.supplyStation.position, beam.center)];
-    }
-
-    // 生成路线段
-    const segments: RouteSegment[] = [];
-
-    // 补给站到第一个交叉点
-    segments.push({
-      id: '',
-      type: 'transit',
-      spray_mode: 'none',
-      waypoints: [
-        { x: this.supplyStation.position.x, y: this.supplyStation.position.y, yaw: this.supplyStation.heading },
-        { x: entryInter.center.map_xy.x, y: entryInter.center.map_xy.y, yaw: calculateAngle(this.supplyStation.position, entryInter.center.map_xy) }
-      ]
-    });
-
-    // 后续路径
-    for (let i = 0; i < path.length - 1; i++) {
-      const currentInter = this.interById.get(path[i]);
-      const nextInter = this.interById.get(path[i + 1]);
-
-      if (currentInter && nextInter) {
-        const road = this.findConnectingRoad(currentInter, nextInter);
-        if (road) {
-          const roadSeg = this.createRoadSegmentBetweenInters(road, currentInter, nextInter);
-          segments.push({
-            id: '',
-            type: 'road',
-            road_id: road.id,
-            spray_mode: 'none',
-            waypoints: this.generateWaypointsForRoadSegment(roadSeg, road.type)
-          });
-        } else {
-          segments.push(this.createTransitSegment(currentInter.center.map_xy, nextInter.center.map_xy));
-        }
-      }
-    }
-
-    return segments;
-  }
-
-  /**
-   * 返回补给站
-   */
-  private planTransitToSupply(beam: BeamPosition): RouteSegment[] {
-    if (!this.supplyStation) {
-      return [this.createTransitSegment(beam.center, { x: 0, y: 0 })];
-    }
-
-    const startInter = this.findNearestIntersection(beam.center);
-    const entryInter = this.interById.get(this.supplyStation.entry_intersection_id);
-
-    if (!startInter || !entryInter) {
-      return [this.createTransitSegment(beam.center, this.supplyStation.position)];
-    }
-
-    // A*搜索路径
-    const path = this.astarNoUTurn(startInter.id, entryInter.id);
-    if (path.length === 0) {
-      return [this.createTransitSegment(beam.center, this.supplyStation.position)];
-    }
-
-    // 生成路线段
-    const segments: RouteSegment[] = [];
-
-    for (let i = 0; i < path.length - 1; i++) {
-      const currentInter = this.interById.get(path[i]);
-      const nextInter = this.interById.get(path[i + 1]);
-
-      if (currentInter && nextInter) {
-        const road = this.findConnectingRoad(currentInter, nextInter);
-        if (road) {
-          const roadSeg = this.createRoadSegmentBetweenInters(road, currentInter, nextInter);
-          segments.push({
-            id: '',
-            type: 'road',
-            road_id: road.id,
-            spray_mode: 'none',
-            waypoints: this.generateWaypointsForRoadSegment(roadSeg, road.type)
-          });
-        } else {
-          segments.push(this.createTransitSegment(currentInter.center.map_xy, nextInter.center.map_xy));
-        }
-      }
-    }
-
-    // 最后一段：入口交叉点到补给站
-    segments.push({
-      id: '',
-      type: 'transit',
-      spray_mode: 'none',
-      waypoints: [
-        { x: entryInter.center.map_xy.x, y: entryInter.center.map_xy.y, yaw: calculateAngle(entryInter.center.map_xy, this.supplyStation.position) },
-        { x: this.supplyStation.position.x, y: this.supplyStation.position.y, yaw: this.supplyStation.heading }
-      ]
-    });
-
-    return segments;
-  }
-
-  /**
-   * A*搜索路径（无掉头）
-   */
-  private astarNoUTurn(startId: string, goalId: string): string[] {
-    if (startId === goalId) return [startId];
-
-    interface Node {
-      id: string;
-      g: number;  // 已走距离
-      h: number;  // 启发式估计
-      f: number;  // g + h
-      parent: string | null;
-      entryDirection: string | null;  // 进入此节点的方向
-    }
-
-    const startInter = this.interById.get(startId);
-    const goalInter = this.interById.get(goalId);
-    if (!startInter || !goalInter) return [];
-
-    const openMap = new Map<string, Node>();
-    const closedSet = new Set<string>();
-
-    openMap.set(startId, {
-      id: startId,
-      g: 0,
-      h: distance(startInter.center.map_xy, goalInter.center.map_xy),
-      f: distance(startInter.center.map_xy, goalInter.center.map_xy),
-      parent: null,
-      entryDirection: null
-    });
-
-    while (openMap.size > 0) {
-      // 找f值最小的节点
-      let current: Node | null = null;
-      let currentId = '';
-      for (const [id, node] of openMap) {
-        if (!current || node.f < current.f) {
-          current = node;
-          currentId = id;
-        }
-      }
-
-      if (currentId === goalId) {
-        // 重建路径
-        const path: string[] = [];
-        let node: Node | null = current;
-        while (node) {
-          path.unshift(node.id);
-          node = node.parent ? openMap.get(node.parent) || closedSet.has(node.parent) ? { id: node.parent } as Node : null : null;
-          // 重新遍历找parent
-        }
-        // 正确重建路径
-        path.length = 0;
-        let traceId: string | null = goalId;
-        const pathSet = new Set<string>();
-        while (traceId) {
-          path.unshift(traceId);
-          pathSet.add(traceId);
-          const traceNode = openMap.get(traceId) || (closedSet.has(traceId) ? null : null);
-          traceId = null; // 需要保存完整的closed节点信息
-        }
-        return path;
-      }
-
-      openMap.delete(currentId);
-      closedSet.add(currentId);
-
-      // 扩展邻居
-      const currentInter = this.interById.get(currentId);
-      if (!currentInter || !currentInter.neighbors) continue;
-
-      const neighbors = [
-        { id: currentInter.neighbors.top, direction: 'top' },
-        { id: currentInter.neighbors.bottom, direction: 'bottom' },
-        { id: currentInter.neighbors.left, direction: 'left' },
-        { id: currentInter.neighbors.right, direction: 'right' }
-      ].filter(n => n.id);
-
-      for (const neighbor of neighbors) {
-        if (closedSet.has(neighbor.id!)) continue;
-
-        // 检查掉头
-        if (current!.entryDirection) {
-          const oppositeDir = {
-            'top': 'bottom',
-            'bottom': 'top',
-            'left': 'right',
-            'right': 'left'
-          }[current!.entryDirection];
-          if (neighbor.direction === oppositeDir) continue;  // 禁止掉头
-        }
-
-        const neighborInter = this.interById.get(neighbor.id!);
-        if (!neighborInter) continue;
-
-        const tentativeG = current!.g + distance(currentInter.center.map_xy, neighborInter.center.map_xy);
-
-        const existingNode = openMap.get(neighbor.id!);
-        if (existingNode && tentativeG >= existingNode.g) continue;
-
-        const h = distance(neighborInter.center.map_xy, goalInter.center.map_xy);
-        openMap.set(neighbor.id!, {
-          id: neighbor.id!,
-          g: tentativeG,
-          h,
-          f: tentativeG + h,
-          parent: currentId,
-          entryDirection: neighbor.direction
-        });
-      }
-    }
-
-    return [];  // 未找到路径
-  }
-
-  /**
-   * 查找最近的交叉点
-   */
-  private findNearestIntersection(point: MapPoint): Intersection | null {
-    let nearest: Intersection | null = null;
-    let minDist = Infinity;
-
-    for (const inter of this.intersections) {
-      const dist = distance(point, inter.center.map_xy);
-      if (dist < minDist) {
-        minDist = dist;
-        nearest = inter;
-      }
-    }
-
-    return nearest;
-  }
-
-  /**
-   * 查找连接两个交叉点的道路
-   */
-  private findConnectingRoad(inter1: Intersection, inter2: Intersection): Road | null {
-    for (const roadId of inter1.connected_roads) {
-      if (inter2.connected_roads.includes(roadId)) {
-        return this.roadById.get(roadId) || null;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * 创建两个交叉点之间的道路段
-   */
-  private createRoadSegmentBetweenInters(road: Road, startInter: Intersection, endInter: Intersection): RoadSegment {
-    const startProj = this.projectOnRoad(startInter.center.map_xy, road);
-    const endProj = this.projectOnRoad(endInter.center.map_xy, road);
-    const [minProj, maxProj] = startProj < endProj ? [startProj, endProj] : [endProj, startProj];
-
-    const points: MapPoint[] = [];
-    let totalDist = 0;
-
-    for (let i = 0; i < road.points.length - 1; i++) {
-      const p1 = road.points[i].map_xy;
-      const p2 = road.points[i + 1].map_xy;
-      const segLen = distance(p1, p2);
-
-      if (totalDist + segLen >= minProj && totalDist <= maxProj) {
-        if (points.length === 0) {
-          points.push(p1);
-        }
-        points.push(p2);
-      }
-
-      totalDist += segLen;
-    }
-
-    if (points.length < 2) {
-      points.length = 0;
-      points.push(startInter.center.map_xy);
-      points.push(endInter.center.map_xy);
-    }
-
-    return {
-      road_id: road.id,
-      start_point: points[0],
-      end_point: points[points.length - 1],
-      start_inter_id: startInter.id,
-      end_inter_id: endInter.id,
-      beam_left_id: null,
-      beam_right_id: null,
-      points
-    };
-  }
-
-  /**
    * 创建过渡路段
    */
   private createTransitSegment(from: MapPoint, to: MapPoint): RouteSegment {
@@ -1087,10 +1208,28 @@ export class JobRoutePlanner {
       type: 'transit',
       spray_mode: 'none',
       waypoints: [
-        { x: from.x, y: from.y, yaw: calculateAngle(from, to) },
-        { x: to.x, y: to.y, yaw: calculateAngle(from, to) }
+        { x: from.x, y: from.y, yaw: calculateYawFromPoints(from, to) },
+        { x: to.x, y: to.y, yaw: calculateYawFromPoints(from, to) }
       ]
     };
+  }
+
+  /**
+   * 验证路线连续性
+   */
+  private validateRoute(segments: RouteSegment[]): void {
+    for (let i = 0; i < segments.length - 1; i++) {
+      const currentSeg = segments[i];
+      const nextSeg = segments[i + 1];
+
+      const endPoint = currentSeg.waypoints[currentSeg.waypoints.length - 1];
+      const startPoint = nextSeg.waypoints[0];
+
+      const dist = distance(endPoint, startPoint);
+      if (dist > 0.5) {
+        console.warn(`[validateRoute] 路段 ${i} 到 ${i + 1} 不连续，距离: ${dist.toFixed(2)}m`);
+      }
+    }
   }
 
   /**
@@ -1107,56 +1246,15 @@ export class JobRoutePlanner {
   /**
    * 计算预估时间
    */
-  private calculateEstimatedTime(totalLength: number, sprayLength: number, segmentCount: number = 0): number {
+  private calculateEstimatedTime(totalLength: number, sprayLength: number, segmentCount: number): number {
     const travelSpeed = 0.5;  // m/s
     const spraySpeed = 0.3;   // m/s (喷淋时较慢)
     const turnTime = 5;       // 每次转弯约5秒
 
     const travelTime = (totalLength - sprayLength) / travelSpeed;
     const sprayTime = sprayLength / spraySpeed;
-    const turnCount = segmentCount;  // 使用传入的路段数量
 
-    return Math.ceil(travelTime + sprayTime + turnCount * turnTime);
-  }
-
-  /**
-   * 选择转弯弧
-   */
-  selectTurnArc(intersectionId: string, fromDirection: string, toDirection: string): TurnArc | null {
-    const quadrant = this.determineQuadrant(fromDirection, toDirection);
-    if (quadrant === null) return null;
-
-    for (const arc of this.turnArcs) {
-      if (arc.intersection_id === intersectionId && arc.quadrant === quadrant) {
-        return arc;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * 确定转弯象限
-   */
-  private determineQuadrant(fromDirection: string, toDirection: string): number | null {
-    // 方向到象限的映射
-    // Q0: 右上 (从左来向上去, 或从下来向右去)
-    // Q1: 左上 (从右来向上去, 或从下来向左去)
-    // Q2: 左下 (从右来向下去, 或从上来向左去)
-    // Q3: 右下 (从左来向下去, 或从上来向右去)
-
-    const quadrantMap: Record<string, number> = {
-      'left_to_top': 0,
-      'bottom_to_right': 0,
-      'right_to_top': 1,
-      'bottom_to_left': 1,
-      'right_to_bottom': 2,
-      'top_to_left': 2,
-      'left_to_bottom': 3,
-      'top_to_right': 3
-    };
-
-    const key = `${fromDirection}_to_${toDirection}`;
-    return quadrantMap[key] !== undefined ? quadrantMap[key] : null;
+    return Math.ceil(travelTime + sprayTime + segmentCount * turnTime);
   }
 
   /**
