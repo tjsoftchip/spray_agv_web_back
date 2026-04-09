@@ -501,10 +501,11 @@ export const getBeamPositions = async (req: Request, res: Response) => {
 /**
  * 规划作业路线
  * 使用 JobRoutePlanner 实现完整路线规划
+ * 保存时使用任务名称作为前缀，避免覆盖
  */
 export const planRoutes = async (req: Request, res: Response) => {
   try {
-    const { beamPositionIds } = req.body;
+    const { beamPositionIds, taskName } = req.body;
 
     if (!beamPositionIds || beamPositionIds.length === 0) {
       return res.status(400).json({
@@ -541,8 +542,11 @@ export const planRoutes = async (req: Request, res: Response) => {
     // 生成YAML格式（可选，用于ROS2）
     const yamlRoute = jobRoutePlanner.generateYAMLRoute(route);
 
-    // 保存路线到文件（供ROS2使用）
-    const routePath = path.join(mapsDir, 'job_routes.yaml');
+    // 生成文件名：taskName_job_routes.yaml
+    // 如果没有提供taskName，使用默认名称
+    const safeTaskName = (taskName || 'task').replace(/[^a-zA-Z0-9_]/g, '_');
+    const routeFileName = `${safeTaskName}_job_routes.yaml`;
+    const routePath = path.join(mapsDir, routeFileName);
     fs.writeFileSync(routePath, yamlRoute, 'utf-8');
     console.log(`[作业规划] 路线已保存到: ${routePath}`);
 
@@ -551,6 +555,7 @@ export const planRoutes = async (req: Request, res: Response) => {
       data: {
         route,
         yaml: yamlRoute,
+        routeFilePath: routeFileName,
         alternatives: []
       }
     });

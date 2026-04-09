@@ -9,6 +9,7 @@ interface TaskAttributes {
   priority: number;
   templateIds: string[];
   transitionSequence: string[];
+  routeFilePath?: string;  // 作业路线文件路径
   executionType: 'manual' | 'scheduled' | 'queue';
   operationType: 'single' | 'scheduled';
   scheduleConfig?: {
@@ -66,6 +67,7 @@ class Task extends Model<TaskAttributes, TaskCreationAttributes> implements Task
   public priority!: number;
   public templateIds!: string[];
   public transitionSequence!: string[];
+  public routeFilePath?: string;
   public executionType!: 'manual' | 'scheduled' | 'queue';
   public operationType!: 'single' | 'scheduled';
   public scheduleConfig?: {
@@ -147,6 +149,10 @@ Task.init(
       type: DataTypes.JSON,
       allowNull: false,
       defaultValue: [],
+    },
+    routeFilePath: {
+      type: DataTypes.STRING,
+      allowNull: true,
     },
     executionType: {
       type: DataTypes.ENUM('manual', 'scheduled', 'queue'),

@@ -1,6 +1,80 @@
 import Task from '../models/Task';
 import Template from '../models/Template';
 import rosbridgeService from './rosbridgeService';
+import * as fs from 'fs';
+import * as path from 'path';
+
+/**
+ * 解析job_routes.yaml文件并构建导航序列
+ */
+function parseJobRoutesYaml(content: string): any {
+  const segments: any[] = [];
+  const lines = content.split('\n');
+  
+  let currentSegment: any = null;
+  let currentWaypoints: any[] = [];
+  let inWaypoints = false;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    
+    // 新的segment
+    if (trimmed.startsWith('- id:')) {
+      if (currentSegment && currentWaypoints.length > 0) {
+        currentSegment.waypoints = currentWaypoints;
+        segments.push(currentSegment);
+      }
+      const id = trimmed.replace('- id:', '').trim();
+      currentSegment = { id, waypoints: [] };
+      currentWaypoints = [];
+      inWaypoints = false;
+    }
+    
+    // segment属性
+    if (currentSegment) {
+      if (trimmed.startsWith('type:')) {
+        currentSegment.type = trimmed.replace('type:', '').trim();
+      } else if (trimmed.startsWith('road_id:')) {
+        currentSegment.road_id = trimmed.replace('road_id:', '').trim();
+      } else if (trimmed.startsWith('arc_id:')) {
+        currentSegment.arc_id = trimmed.replace('arc_id:', '').trim();
+      } else if (trimmed.startsWith('beam_id:')) {
+        currentSegment.beam_id = trimmed.replace('beam_id:', '').trim();
+      } else if (trimmed.startsWith('side:')) {
+        currentSegment.side = trimmed.replace('side:', '').trim();
+      } else if (trimmed.startsWith('spray_mode:')) {
+        currentSegment.spray_mode = trimmed.replace('spray_mode:', '').trim();
+      } else if (trimmed.startsWith('direction:')) {
+        currentSegment.direction = trimmed.replace('direction:', '').trim();
+      } else if (trimmed === 'waypoints:') {
+        inWaypoints = true;
+      }
+    }
+    
+    // waypoints
+    if (inWaypoints && trimmed.startsWith('- x:')) {
+      const x = parseFloat(trimmed.replace('- x:', '').trim());
+      const yLine = lines[i + 1]?.trim() || '';
+      const y = parseFloat(yLine.replace('y:', '').trim());
+      const yawLine = lines[i + 2]?.trim() || '';
+      const yaw = parseFloat(yawLine.replace('yaw:', '').trim());
+      
+      if (!isNaN(x) && !isNaN(y) && !isNaN(yaw)) {
+        currentWaypoints.push({ x, y, yaw });
+        i += 2;
+      }
+    }
+  }
+  
+  // 添加最后一个segment
+  if (currentSegment && currentWaypoints.length > 0) {
+    currentSegment.waypoints = currentWaypoints;
+    segments.push(currentSegment);
+  }
+  
+  return { route: { segments } };
+}
 
 interface NavigationWaypoint {
   pointId: string;
@@ -86,9 +160,104 @@ class TaskExecutionService {
   }
 
   /**
+   * 从job route YAML文件构建导航序列
+   */
+  private async buildNavigationSequenceFromRouteFile(task: Task): Promise<NavigationWaypoint[]> {
+    try {
+      console.log(`[TaskExecutionService] Building navigation sequence from route file for task ${task.id}`);
+      
+      if (!task.routeFilePath) {
+        throw new Error('No route file path specified for this task');
+      }
+
+      const mapsDir = '/home/jetson/yahboomcar_ros2_ws/yahboomcar_ws/src/yahboomcar_nav/maps';
+      const routePath = path.join(mapsDir, task.routeFilePath);
+      
+      if (!fs.existsSync(routePath)) {
+        throw new Error(`Route file not found: ${routePath}`);
+      }
+
+      const routeContent = fs.readFileSync(routePath, 'utf-8');
+      const route = parseJobRoutesYaml(routeContent);
+      
+      if (!route?.route?.segments) {
+        throw new Error('Invalid route file format');
+      }
+
+      const segments = route.route.segments;
+      const navigationSequence: NavigationWaypoint[] = [];
+      
+      console.log(`[TaskExecutionService] Processing ${segments.length} segments from route file`);
+
+      for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i];
+        const waypoints = segment.waypoints || [];
+        
+        if (waypoints.length === 0) continue;
+
+        // 获取路段类型和喷淋模式
+        const segmentType = segment.type;
+        const sprayMode = segment.spray_mode;
+        
+        console.log(`[TaskExecutionService] Segment ${i}: ${segmentType}, spray: ${sprayMode}`);
+
+        // 为每个路径点创建导航点
+        for (let j = 0; j < waypoints.length; j++) {
+          const wp = waypoints[j];
+          
+          // 将yaw转换为四元数
+          const halfYaw = wp.yaw / 2;
+          const w = Math.cos(halfYaw);
+          const z = Math.sin(halfYaw);
+
+          const waypoint: NavigationWaypoint = {
+            pointId: `${segment.id}_${j}`,
+            pointName: `${segmentType} ${segment.beam_id || ''} ${segment.side || ''}`.trim() || segment.id,
+            position: { x: wp.x, y: wp.y, z: 0 },
+            orientation: { x: 0, y: 0, z: z, w: w },
+            status: 'pending',
+            order: navigationSequence.length,
+          };
+
+          // 如果是喷淋路段（road类型且需要喷淋），添加喷淋参数
+          if (segmentType === 'road' && sprayMode && sprayMode !== 'none') {
+            waypoint.roadSegment = {
+              id: segment.road_id || segment.id,
+              sprayParams: {
+                pumpStatus: sprayMode !== 'none',
+                leftArmStatus: (sprayMode === 'both' || sprayMode === 'left_only') ? 'open' : 'close',
+                rightArmStatus: (sprayMode === 'both' || sprayMode === 'right_only') ? 'open' : 'close',
+                leftValveStatus: sprayMode === 'both' || sprayMode === 'left_only',
+                rightValveStatus: sprayMode === 'both' || sprayMode === 'right_only',
+                armHeight: 1.0,
+              },
+              operationSpeed: 0.3,  // 喷淋速度
+            };
+          }
+
+          navigationSequence.push(waypoint);
+        }
+      }
+
+      console.log(`[TaskExecutionService] Navigation sequence built with ${navigationSequence.length} waypoints`);
+      return navigationSequence;
+    } catch (error) {
+      console.error(`[TaskExecutionService] Error building navigation sequence from route file:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * 构建导航序列（包含路段和喷淋参数）
+   * 优先从route file读取，其次从template读取
    */
   private async buildNavigationSequence(task: Task): Promise<NavigationWaypoint[]> {
+    // 如果有routeFilePath，从文件读取
+    if (task.routeFilePath) {
+      return this.buildNavigationSequenceFromRouteFile(task);
+    }
+    
+    // 否则从template读取（原有逻辑）
     try {
       console.log(`[TaskExecutionService] Building navigation sequence for task ${task.id}`);
       const navigationSequence: NavigationWaypoint[] = [];
