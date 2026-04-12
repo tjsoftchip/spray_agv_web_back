@@ -15,7 +15,7 @@ import { TopologyEngine } from './engine/topologyEngine';
 import { TaskAnalyzer } from './engine/taskAnalyzer';
 import { EulerianRouter } from './engine/eulerianRouter';
 import { TrajectoryBuilder } from './engine/trajectoryBuilder';
-import { SprayMode, DirectedEdge, RouteResponseData } from './engine/types';
+import { SprayMode, DirectedEdge, EdgeType, RouteResponseData } from './engine/types';
 
 export class RouteBuilder {
   private roads: any[] = [];
@@ -109,6 +109,7 @@ export class RouteBuilder {
 
   private convertToSegments(edgePath: DirectedEdge[], routeData: RouteResponseData): RouteSegment[] {
     const segments: RouteSegment[] = [];
+    const completedTaskGroups = new Set<string>();
 
     for (const edge of edgePath) {
       const waypoints = edge.points.map((pt, idx, arr) => {
@@ -124,7 +125,8 @@ export class RouteBuilder {
         return { x: pt.x, y: pt.y, yaw };
       });
 
-      const sprayMode = this.convertSprayMode(edge.taskMode);
+      const isFirstVisit = !!edge.taskGroupId && !completedTaskGroups.has(edge.taskGroupId);
+      const sprayMode = this.determineSegmentSprayMode(edge, isFirstVisit);
 
       const seg: RouteSegment = {
         id: `seg_${segments.length}`,
@@ -141,9 +143,29 @@ export class RouteBuilder {
       }
 
       segments.push(seg);
+
+      if (isFirstVisit && edge.taskGroupId) {
+        completedTaskGroups.add(edge.taskGroupId);
+      }
     }
 
     return segments;
+  }
+
+  private determineSegmentSprayMode(edge: DirectedEdge, isFirstVisit: boolean): OldSprayMode {
+    if (edge.type === EdgeType.INTERNAL_ARC || edge.type === EdgeType.STATION_LINK) {
+      return 'none';
+    }
+
+    if (!edge.taskGroupId) {
+      return this.convertSprayMode(edge.taskMode);
+    }
+
+    if (!isFirstVisit) {
+      return 'none';
+    }
+
+    return this.convertSprayMode(edge.taskMode);
   }
 
   private convertSprayMode(mode: SprayMode): OldSprayMode {
