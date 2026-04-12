@@ -208,3 +208,48 @@ export interface BoundaryEndpoints {
   startInter: Intersection | null;
   endInter: Intersection | null;
 }
+
+export type SprayRequirementType = 'single' | 'dual';
+
+export interface SprayRequirement {
+  roadId: string;
+  type: SprayRequirementType;
+  beams: string[];
+  targetSides: Set<'left' | 'right'>;
+  completed: boolean;
+}
+
+export interface TaskGraph {
+  nodes: Map<string, TaskNode>;
+  edges: TaskEdge[];
+}
+
+export interface TaskNode {
+  id: string;
+  intersectionId: string;
+  position: MapPoint;
+  connectedRoads: string[];
+  turnArcs: string[];
+}
+
+export interface TaskEdge {
+  fromNode: string;
+  toNode: string;
+  roadId?: string;
+  arcId?: string;
+  weight: number;
+}
+
+export interface DrivingState {
+  intersectionId: string;
+  position: MapPoint;
+  heading: number;
+}
+
+export interface PathSegment {
+  type: 'road' | 'turn_arc';
+  roadId?: string;
+  arcId?: string;
+  points: MapPoint[];
+  sprayAction?: SprayMode;
+}

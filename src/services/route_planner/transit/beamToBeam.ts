@@ -74,21 +74,17 @@ export class BeamToBeamTransit {
       console.log(`[BeamToBeamTransit] 搜索道路段: 从 (${currentPos.x.toFixed(1)}, ${currentPos.y.toFixed(1)}) 到 (${interA2Pos.x.toFixed(1)}, ${interA2Pos.y.toFixed(1)})`);
       console.log(`[BeamToBeamTransit] 道路段结果: ${toInterA2 ? toInterA2.length + '点' : 'null'}`);
       
-      if (toInterA2 && toInterA2.length >= 2) {
-        // 方向检查：应该从当前位置继续向西
-        const lastPt = toInterA2[toInterA2.length - 1];
-        const distFromCurrent = distance(currentPos, lastPt);
-        
-        // 强制从当前位置出发向西
-        toInterA2[0] = currentPos;
-        
-        segments.push({
-          id: '',
-          type: 'transit',
-          spray_mode: 'none',
-          waypoints: generateWaypointsWithYaw(toInterA2)
-        });
-        console.log(`[BeamToBeamTransit] 添加: south road → inter_A_2, 点数: ${toInterA2.length}`);
+        if (toInterA2 && toInterA2.length >= 2) {
+          toInterA2[0] = currentPos;
+          
+          segments.push({
+            id: '',
+            type: 'road',
+            road_id: currentSouthRoadId,
+            spray_mode: 'none',
+            waypoints: generateWaypointsWithYaw(toInterA2)
+          });
+          console.log(`[BeamToBeamTransit] 添加: ${currentSouthRoadId} → inter_A_2, 点数: ${toInterA2.length}`);
         
         // 3. 从inter_A_2通过弧线/道路到west road北端
         const interA1 = this.mapQuery.getIntersection('inter_A_1');
@@ -100,16 +96,30 @@ export class BeamToBeamTransit {
           const toInterA1 = this.mapQuery.getRoadSegmentBetweenPoints(westRoadId, interA2Pos, interA1Pos);
           
           if (toInterA1 && toInterA1.length >= 2) {
-            // 设置起点为inter_A_2
             toInterA1[0] = interA2Pos;
-            
+
             segments.push({
               id: '',
-              type: 'transit',
+              type: 'road',
+              road_id: westRoadId,
               spray_mode: 'none',
               waypoints: generateWaypointsWithYaw(toInterA1)
             });
-            console.log(`[BeamToBeamTransit] 添加: inter_A_2 → inter_A_1 (west road), 点数: ${toInterA1.length}`);
+            console.log(`[BeamToBeamTransit] 添加: ${westRoadId} → inter_A_1, 点数: ${toInterA1.length}`);
+
+            // 添加圆弧：inter_A_2 → inter_A_1
+            const arcA2A1 = this.findArcBetweenIntersections('inter_A_2', 'inter_A_1');
+            if (arcA2A1) {
+              const arcPoints = arcA2A1.tangent_points.map((p: any) => ({ x: p.map_xy.x, y: p.map_xy.y }));
+              segments.push({
+                id: '',
+                type: 'turn_arc',
+                arc_id: arcA2A1.id,
+                spray_mode: 'none',
+                waypoints: generateWaypointsWithYaw(arcPoints)
+              });
+              console.log(`[BeamToBeamTransit] 添加圆弧: ${arcA2A1.id}`);
+            }
             
             // 4. 从inter_A_1沿north road向东到inter_B_1
             const interB1 = this.mapQuery.getIntersection('inter_B_1');
@@ -121,14 +131,29 @@ export class BeamToBeamTransit {
               
               if (toInterB1 && toInterB1.length >= 2) {
                 toInterB1[0] = interA1Pos;
-                
+
                 segments.push({
                   id: '',
-                  type: 'transit',
+                  type: 'road',
+                  road_id: northRoadId,
                   spray_mode: 'none',
                   waypoints: generateWaypointsWithYaw(toInterB1)
                 });
-                console.log(`[BeamToBeamTransit] 添加: inter_A_1 → inter_B_1 (north road), 点数: ${toInterB1.length}`);
+                console.log(`[BeamToBeamTransit] 添加: ${northRoadId} → inter_B_1, 点数: ${toInterB1.length}`);
+
+                // 添加圆弧：inter_A_1 → inter_B_1
+                const arcA1B1 = this.findArcBetweenIntersections('inter_A_1', 'inter_B_1');
+                if (arcA1B1) {
+                  const arcPoints = arcA1B1.tangent_points.map((p: any) => ({ x: p.map_xy.x, y: p.map_xy.y }));
+                  segments.push({
+                    id: '',
+                    type: 'turn_arc',
+                    arc_id: arcA1B1.id,
+                    spray_mode: 'none',
+                    waypoints: generateWaypointsWithYaw(arcPoints)
+                  });
+                  console.log(`[BeamToBeamTransit] 添加圆弧: ${arcA1B1.id}`);
+                }
                 
                 // 5. 从inter_B_1到下一个梁位的西边界入口
                 // beam_BC_21的西边界入口应该在inter_B_2附近
@@ -148,11 +173,12 @@ export class BeamToBeamTransit {
                       toArcEntry[0] = interB1Pos;
                       segments.push({
                         id: '',
-                        type: 'transit',
+                        type: 'road',
+                        road_id: nextWestRoadId,
                         spray_mode: 'none',
                         waypoints: generateWaypointsWithYaw(toArcEntry)
                       });
-                      console.log(`[BeamToBeamTransit] 添加: inter_B_1 → 西边界入口, 点数: ${toArcEntry.length}`);
+                      console.log(`[BeamToBeamTransit] 添加: ${nextWestRoadId} → 西边界入口, 点数: ${toArcEntry.length}`);
                     }
                   }
                 }
@@ -189,9 +215,33 @@ export class BeamToBeamTransit {
         
         for (const arc of relevantArcs) {
           const entry = arc.tangent_points[0];
-          // 找到入口在 (9, 6) 附近的弧线
           if (Math.abs(entry.x - 9.3) < 1.5 && Math.abs(entry.y - 6.0) < 1.5) {
             return arc.id;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 查找两个交叉点之间的圆弧
+   */
+  private findArcBetweenIntersections(fromInterId: string, toInterId: string): any | null {
+    const allArcs = this.mapQuery.getAllArcs();
+    const fromInter = this.mapQuery.getIntersection(fromInterId);
+    const toInter = this.mapQuery.getIntersection(toInterId);
+    
+    if (!fromInter || !toInter) return null;
+
+    for (const arc of allArcs) {
+      if (arc.intersection_id === fromInterId) {
+        const tangent = arc.tangent_points;
+        if (tangent && tangent.length >= 2) {
+          const endPoint = tangent[tangent.length - 1];
+          if (Math.abs(endPoint.x - toInter.center.map_xy.x) < 2 && 
+              Math.abs(endPoint.y - toInter.center.map_xy.y) < 2) {
+            return arc;
           }
         }
       }

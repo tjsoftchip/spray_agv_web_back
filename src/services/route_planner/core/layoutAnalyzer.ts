@@ -24,15 +24,32 @@ export class LayoutAnalyzer {
     
     const columnCounts = Array.from(this.rows.values()).map(r => r.length);
     
+    const adjacencyMap = this.buildAdjacencyMap(beams);
+    
+    // 检测是否是实际连续行（不管row字段是什么，只要全部横向相邻）
+    let isActualSingleRow = false;
+    if (beams.length > 1) {
+      // 检查是否所有梁位都在横向相邻链上
+      const sorted = [...beams].sort((a, b) => a.center.x - b.center.x);
+      isActualSingleRow = true;
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const neighbors = adjacencyMap.get(sorted[i].id) || [];
+        if (!neighbors.includes(sorted[i + 1].id)) {
+          isActualSingleRow = false;
+          break;
+        }
+      }
+    }
+
     return {
       beams,
       rowCount: this.rows.size,
       columnCounts,
       isSingleBeam: beams.length === 1,
-      isSingleRow: this.rows.size === 1 && beams.length > 1,
+      isSingleRow: (this.rows.size === 1 || isActualSingleRow) && beams.length > 1,
       isSingleColumn: beams.every(b => (this.rows.get(b.row)?.length ?? 0) === 1),
       isGrid: this.rows.size > 1 && columnCounts.every(c => c > 1),
-      adjacencyMap: this.buildAdjacencyMap(beams),
+      adjacencyMap,
       rows: this.rows
     };
   }
@@ -105,6 +122,27 @@ export class LayoutAnalyzer {
    */
   isZigzagApplicable(layout: BeamLayout): boolean {
     return layout.isSingleRow && layout.beams.length >= 2;
+  }
+
+  /**
+   * 判断是否适合连续行优化路线
+   * 条件：单行且全部连续相邻
+   */
+  isContinuousRowApplicable(layout: BeamLayout): boolean {
+    if (!layout.isSingleRow || layout.beams.length < 2) {
+      return false;
+    }
+
+    // 检查是否全部连续相邻
+    const sorted = [...layout.beams].sort((a, b) => a.center.x - b.center.x);
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const neighbors = layout.adjacencyMap.get(sorted[i].id) || [];
+      if (!neighbors.includes(sorted[i + 1].id)) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   /**

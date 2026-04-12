@@ -160,7 +160,7 @@ export class RouteValidator {
   }
 
   /**
-   * 验证喷淋完整性
+   * 验证喷淋完整性（含双侧喷淋）
    */
   private validateSprayCoverage(
     segments: RouteSegment[], 
@@ -168,21 +168,30 @@ export class RouteValidator {
     errors: ValidationError[],
     warnings: ValidationWarning[]
   ): void {
-    // 检查每个梁位的边界是否都被喷淋
     const coveredBoundaries = new Map<string, Set<string>>();
+    const dualSprayRoads = new Set<string>();
     
     for (const seg of segments) {
-      if (seg.spray_mode !== 'none' && seg.beam_id) {
-        if (!coveredBoundaries.has(seg.beam_id)) {
-          coveredBoundaries.set(seg.beam_id, new Set());
+      if (seg.spray_mode === 'both') {
+        if (seg.road_id) {
+          dualSprayRoads.add(seg.road_id);
+        }
+      }
+      
+      if (seg.spray_mode !== 'none') {
+        if (!coveredBoundaries.has(seg.beam_id || 'unknown')) {
+          coveredBoundaries.set(seg.beam_id || 'unknown', new Set());
         }
         if (seg.side) {
-          coveredBoundaries.get(seg.beam_id)!.add(seg.side);
+          coveredBoundaries.get(seg.beam_id || 'unknown')!.add(seg.side);
         }
       }
     }
 
-    // 检查每个梁位是否覆盖了所有4个边界
+    if (dualSprayRoads.size > 0) {
+      console.log(`[RouteValidator] 检测到 ${dualSprayRoads.size} 条共享边使用双侧喷淋`);
+    }
+
     const expectedSides = ['west', 'north', 'east', 'south'];
     for (const beam of beams) {
       const covered = coveredBoundaries.get(beam.id) || new Set();
