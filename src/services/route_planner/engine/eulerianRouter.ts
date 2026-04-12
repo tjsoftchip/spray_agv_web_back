@@ -258,9 +258,9 @@ export class EulerianRouter {
 
   private getTurnPenalty(edge: DirectedEdge): number {
     if (edge.type !== EdgeType.INTERNAL_ARC) return STRAIGHT_PENALTY;
-    if (edge.edgeId.startsWith('uturn_')) return TURN_PENALTY * 3;
-    if (edge.edgeId.startsWith('straight_')) return STRAIGHT_PENALTY;
-    if (edge.edgeId.startsWith('cross_')) return TURN_PENALTY * 0.5;
+    if (edge.edgeId.startsWith('uturn_')) return TURN_PENALTY * 50;
+    if (edge.edgeId.startsWith('straight_')) return TURN_PENALTY * 2;
+    if (edge.edgeId.startsWith('cross_')) return TURN_PENALTY * 2;
     return TURN_PENALTY;
   }
 

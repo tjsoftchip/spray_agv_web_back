@@ -312,6 +312,40 @@ export class TopologyEngine {
       }
     }
 
+    for (const arc of turnArcs) {
+      const inter = this.intersectionMap.get(arc.intersection_id);
+      if (!inter) continue;
+
+      const cx = inter.center.map_xy.x;
+      const cy = inter.center.map_xy.y;
+
+      const firstPt = arc.points[0].map_xy;
+      const lastPt = arc.points[arc.points.length - 1].map_xy;
+
+      const entryDir = this.inferDirectionFromOffset(firstPt.x - cx, firstPt.y - cy);
+      const exitDir = this.inferDirectionFromOffset(lastPt.x - cx, lastPt.y - cy);
+
+      if (entryDir === exitDir) continue;
+
+      const inNode = this.nodes.get(`${inter.id}.IN_${this.capitalize(entryDir)}`);
+      if (inNode) {
+        inNode.position = { x: firstPt.x, y: firstPt.y };
+      }
+      const outNode = this.nodes.get(`${inter.id}.OUT_${this.capitalize(exitDir)}`);
+      if (outNode) {
+        outNode.position = { x: lastPt.x, y: lastPt.y };
+      }
+
+      const revInNode = this.nodes.get(`${inter.id}.IN_${this.capitalize(exitDir)}`);
+      if (revInNode) {
+        revInNode.position = { x: lastPt.x, y: lastPt.y };
+      }
+      const revOutNode = this.nodes.get(`${inter.id}.OUT_${this.capitalize(entryDir)}`);
+      if (revOutNode) {
+        revOutNode.position = { x: firstPt.x, y: firstPt.y };
+      }
+    }
+
     const dirs: Direction[] = ['north', 'south', 'east', 'west'];
     for (const [interId, inter] of this.intersectionMap) {
       for (const fromDir of dirs) {
@@ -330,7 +364,9 @@ export class TopologyEngine {
     toDir: Direction
   ): void {
     const isUturn = fromDir === toDir;
-    const isStraight = !isUturn && fromDir === OPPOSITE_DIR[toDir];
+    if (isUturn) return;
+
+    const isStraight = fromDir === OPPOSITE_DIR[toDir];
     const prefix = isUturn ? 'uturn' : isStraight ? 'straight' : 'cross';
     const edgeId = `${prefix}_${inter.id}_${fromDir}_to_${toDir}`;
     if (this.edges.has(edgeId)) return;
@@ -464,6 +500,24 @@ export class TopologyEngine {
       });
     } else {
       console.warn(`[TopologyEngine] 补给站出口节点 ${outNodeId} 不存在`);
+    }
+
+    const returnFromInEdgeId = 'station_return_from_in';
+    if (this.nodes.has(inNodeId)) {
+      const inPos = this.nodes.get(inNodeId)!.position;
+      this.edges.set(returnFromInEdgeId, {
+        edgeId: returnFromInEdgeId,
+        type: EdgeType.STATION_LINK,
+        sourceNodeId: inNodeId,
+        targetNodeId: 'SUPPLY_STATION_RETURN.STATION',
+        points: [
+          { latitude: 0, longitude: 0, x: inPos.x, y: inPos.y },
+          { latitude: 0, longitude: 0, x: supplyPos.x, y: supplyPos.y },
+        ],
+        length: this.dist(inPos, supplyPos),
+        taskMode: 0,
+        isCompleted: false,
+      });
     }
 
     console.log(`[TopologyEngine] 补给站连接: ${supplyIntersectionId}, 方向=${dirCap}`);
