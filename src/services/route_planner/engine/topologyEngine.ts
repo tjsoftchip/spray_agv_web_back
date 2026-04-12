@@ -245,22 +245,22 @@ export class TopologyEngine {
   }
 
   private createInternalArcEdges(turnArcs: RawTurnArc[]): void {
-    const DIRECTION_MAP: Record<number, { entry: Direction; exit: Direction }> = {
-      0: { entry: 'south', exit: 'east' },
-      1: { entry: 'south', exit: 'west' },
-      2: { entry: 'north', exit: 'west' },
-      3: { entry: 'north', exit: 'east' },
-    };
-
     const arcEdgeRegistry = new Set<string>();
 
     for (const arc of turnArcs) {
       const inter = this.intersectionMap.get(arc.intersection_id);
       if (!inter) continue;
 
-      const quad = arc.quadrant;
-      const mapping = DIRECTION_MAP[quad];
-      if (!mapping) continue;
+      const cx = inter.center.map_xy.x;
+      const cy = inter.center.map_xy.y;
+
+      const firstPt = arc.points[0].map_xy;
+      const lastPt = arc.points[arc.points.length - 1].map_xy;
+
+      const entryDir = this.inferDirectionFromOffset(firstPt.x - cx, firstPt.y - cy);
+      const exitDir = this.inferDirectionFromOffset(lastPt.x - cx, lastPt.y - cy);
+
+      if (entryDir === exitDir) continue;
 
       const pts = arc.points.map(p => ({
         latitude: p.gps.latitude,
@@ -270,8 +270,8 @@ export class TopologyEngine {
       }));
       const arcLength = this.calculateLength(pts);
 
-      const inNodeId = `${inter.id}.IN_${this.capitalize(mapping.entry)}`;
-      const outNodeId = `${inter.id}.OUT_${this.capitalize(mapping.exit)}`;
+      const inNodeId = `${inter.id}.IN_${this.capitalize(entryDir)}`;
+      const outNodeId = `${inter.id}.OUT_${this.capitalize(exitDir)}`;
 
       if (this.nodes.has(inNodeId) && this.nodes.has(outNodeId)) {
         const fwdEdgeId = `arc_${arc.id}_fwd`;
@@ -287,12 +287,12 @@ export class TopologyEngine {
           taskMode: 0,
           isCompleted: false,
         });
-        arcEdgeRegistry.add(`${inter.id}|${mapping.entry}|${mapping.exit}`);
+        arcEdgeRegistry.add(`${inter.id}|${entryDir}|${exitDir}`);
       }
 
       const revPts = [...pts].reverse();
-      const revInNodeId = `${inter.id}.IN_${this.capitalize(mapping.exit)}`;
-      const revOutNodeId = `${inter.id}.OUT_${this.capitalize(mapping.entry)}`;
+      const revInNodeId = `${inter.id}.IN_${this.capitalize(exitDir)}`;
+      const revOutNodeId = `${inter.id}.OUT_${this.capitalize(entryDir)}`;
 
       if (this.nodes.has(revInNodeId) && this.nodes.has(revOutNodeId)) {
         const bwdEdgeId = `arc_${arc.id}_bwd`;
@@ -308,7 +308,7 @@ export class TopologyEngine {
           taskMode: 0,
           isCompleted: false,
         });
-        arcEdgeRegistry.add(`${inter.id}|${mapping.exit}|${mapping.entry}`);
+        arcEdgeRegistry.add(`${inter.id}|${exitDir}|${entryDir}`);
       }
     }
 
@@ -587,6 +587,13 @@ export class TopologyEngine {
 
   private dist(a: { x: number; y: number }, b: { x: number; y: number }): number {
     return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+  }
+
+  private inferDirectionFromOffset(dx: number, dy: number): Direction {
+    if (Math.abs(dx) > Math.abs(dy)) {
+      return dx > 0 ? 'east' : 'west';
+    }
+    return dy > 0 ? 'north' : 'south';
   }
 
   private capitalize(s: string): string {
