@@ -1,7 +1,6 @@
 import sequelize from '../config/database';
 import { QueryTypes } from 'sequelize';
 import User from './User';
-import Template from './Template';
 import Task from './Task';
 import SupplyStation from './SupplyStation';
 import BeamYard from './BeamYard';
@@ -15,7 +14,6 @@ import GPSMap from './GPSMap';
 
 const models = {
   User,
-  Template,
   Task,
   SupplyStation,
   BeamYard,
@@ -102,5 +100,5 @@ export const initDatabase = async (): Promise<void> => {
   }
 };
 
-export { sequelize, User, Template, Task, SupplyStation, BeamYard, NavigationPoint, RoadSegment, TaskQueue, MapModel, Schedule, SystemConfig, GPSMap };
+export { sequelize, User, Task, SupplyStation, BeamYard, NavigationPoint, RoadSegment, TaskQueue, MapModel, Schedule, SystemConfig, GPSMap };
 export default models;

@@ -878,13 +878,13 @@ async function generateMapFilesAsync(session: MappingSession) {
 }
 
 // ============================================================
-// 生成route_executor使用的YAML路线文件
+// 生成道路网络YAML路线文件 (归档用途，实际导航使用 gps_routes.json)
 // ============================================================
 
 function generateRoutesYaml(roads: Road[], turnArcs: TurnArc[], origin: any): string {
   const lines: string[] = [];
   lines.push('# GPS道路网络路线文件');
-  lines.push('# 用于route_executor逐点导航');
+  lines.push('# 用于道路网络归档和手动查阅');
   lines.push(`# 生成时间: ${new Date().toISOString()}`);
   lines.push(`# GPS原点: (${origin.gps.latitude}, ${origin.gps.longitude})`);
   lines.push(`# 地图旋转: ${origin.rotation || 0} rad`);
@@ -967,7 +967,7 @@ function generateRoutesYaml(roads: Road[], turnArcs: TurnArc[], origin: any): st
 function generateGPSOriginYaml(origin: any, supplyStationEntry: SupplyStationEntry | null): string {
   const lines: string[] = [];
   lines.push('# GPS原点配置 - ROS2参数格式');
-  lines.push('# 用于auto_initial_pose节点和route_executor节点');
+  lines.push('# 用于auto_initial_pose节点和automation_manager节点');
   lines.push(`# 生成时间: ${new Date().toISOString()}`);
   lines.push('');
   lines.push('/**:');

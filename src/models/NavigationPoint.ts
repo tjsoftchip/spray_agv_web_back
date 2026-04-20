@@ -4,7 +4,6 @@ import sequelize from '../config/database';
 interface NavigationPointAttributes {
   id: string;
   name: string;
-  templateId?: string;
   yardId: string;
   position: {
     x: number;
@@ -43,7 +42,6 @@ interface NavigationPointCreationAttributes extends Optional<NavigationPointAttr
 class NavigationPoint extends Model<NavigationPointAttributes, NavigationPointCreationAttributes> implements NavigationPointAttributes {
   public id!: string;
   public name!: string;
-  public templateId?: string;
   public yardId!: string;
   public position!: { x: number; y: number; z: number };
   public orientation!: { x: number; y: number; z: number; w: number };
@@ -78,10 +76,6 @@ NavigationPoint.init(
     name: {
       type: DataTypes.STRING,
       allowNull: false,
-    },
-    templateId: {
-      type: DataTypes.STRING,
-      allowNull: true,
     },
     yardId: {
       type: DataTypes.STRING,
@@ -134,10 +128,6 @@ NavigationPoint.init(
       {
         fields: ['yardId'],
         name: 'idx_nav_point_yard_id',
-      },
-      {
-        fields: ['templateId'],
-        name: 'idx_nav_point_template_id',
       },
       {
         fields: ['type'],

@@ -210,7 +210,7 @@ export const getSystemStatus = async (req: Request, res: Response) => {
     // 检查功能节点
     status.functionalNodes.mapping = await processExists('cartographer_node');
     status.functionalNodes.navigation = await processExists('nav2');
-    status.functionalNodes.supply = await processExists('supply_manager');
+    status.functionalNodes.supply = await processExists('automation_manager');
     
     // 检查传感器 - 使用 ROS2 节点列表检测（更准确）
     const ros2NodeList = await new Promise<string>((resolve) => {
@@ -252,7 +252,7 @@ function processExists(processName: string): boolean {
         command = 'pgrep -f "nav2" | wc -l';
         break;
       case 'supply_manager':
-        command = 'pgrep -f "supply_manager" | wc -l';
+        command = 'pgrep -f "automation_manager" | wc -l';
         break;
       case 'astra_camera_node':
         command = 'pgrep -f "astra_camera_node" | wc -l';
@@ -390,7 +390,7 @@ export const restartLayer = async (req: Request, res: Response) => {
         
       case 'function':
         // 重启所有功能节点
-        exec('pkill -f "cartographer" && pkill -f "nav2" && pkill -f "supply_manager" && pkill -f "aruco"', (error) => {
+        exec('pkill -f "cartographer" && pkill -f "nav2" && pkill -f "automation_manager" && pkill -f "aruco"', (error) => {
           if (error) {
             console.error('Error restarting function nodes:', error);
             return res.status(500).json({ error: 'Failed to restart function nodes' });

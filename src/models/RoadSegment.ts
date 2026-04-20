@@ -3,7 +3,6 @@ import sequelize from '../config/database';
 
 interface RoadSegmentAttributes {
   id: string;
-  templateId: string;
   startNavPointId: string;
   endNavPointId: string;
   sprayParams: {
@@ -23,7 +22,6 @@ interface RoadSegmentCreationAttributes extends Optional<RoadSegmentAttributes, 
 
 class RoadSegment extends Model<RoadSegmentAttributes, RoadSegmentCreationAttributes> implements RoadSegmentAttributes {
   public id!: string;
-  public templateId!: string;
   public startNavPointId!: string;
   public endNavPointId!: string;
   public sprayParams!: {
@@ -45,10 +43,6 @@ RoadSegment.init(
       type: DataTypes.STRING,
       primaryKey: true,
       defaultValue: () => `segment_${Date.now()}`,
-    },
-    templateId: {
-      type: DataTypes.STRING,
-      allowNull: false,
     },
     startNavPointId: {
       type: DataTypes.STRING,

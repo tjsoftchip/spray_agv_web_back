@@ -11,5 +11,6 @@ router.post('/stop', authenticate, navigationController.stopNavigation);
 router.get('/status/:taskId', authenticate, navigationController.getNavigationStatus);
 router.post('/goto-point', authenticate, navigationController.gotoPoint);
 router.post('/set-initial-pose', authenticate, navigationController.setInitialPose);
+router.get('/robot-position', navigationController.getRobotPosition);
 
 export default router;

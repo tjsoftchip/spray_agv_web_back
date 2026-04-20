@@ -1,6 +1,6 @@
 import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
-import { Task, NavigationPoint, Template } from '../models';
+import { Task, NavigationPoint } from '../models';
 import rosbridgeService from '../services/rosbridgeService';
 
 export const startNavigation = async (req: AuthRequest, res: Response): Promise<void> => {
@@ -57,8 +57,8 @@ export const startNavigation = async (req: AuthRequest, res: Response): Promise<
     }
 
     if (!task.navigationSequence || task.navigationSequence.length === 0) {
-      const navigationSequence = await generateNavigationSequence(task);
-      await task.update({ navigationSequence });
+      res.status(400).json({ error: 'Task has no navigation sequence' });
+      return;
     }
 
     // 切换速度命令路由到导航模式
@@ -206,76 +206,43 @@ export const getNavigationStatus = async (req: AuthRequest, res: Response): Prom
 
 export const gotoPoint = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { templateId, pointId } = req.body;
-    
-    console.log('[Goto Point Request]', {
-      templateId,
-      pointId,
-      body: req.body
-    });
-    
-    // 验证输入参数
-    if (!templateId || !pointId) {
-      console.log('[Goto Point Error] Missing required parameters:', { templateId, pointId });
-      res.status(400).json({ error: 'Missing required parameters: templateId and pointId' });
+    const { pointId } = req.body;
+
+    console.log('[Goto Point Request]', { pointId, body: req.body });
+
+    if (!pointId) {
+      res.status(400).json({ error: 'Missing required parameter: pointId' });
       return;
     }
-    
-    // 首先从 navigation_points 表查找
-    let point = await NavigationPoint.findByPk(pointId);
-    
-    // 如果没找到，尝试从模板的 JSON 字段查找
-    if (!point) {
-      console.log('[Goto Point] Point not found in navigation_points table, checking template JSON');
-      const template: any = await Template.findByPk(templateId);
-      if (template) {
-        try {
-          let navigationPoints;
-          if (typeof template.navigationPoints === 'string') {
-            navigationPoints = JSON.parse(template.navigationPoints || '[]');
-          } else {
-            navigationPoints = template.navigationPoints || [];
-          }
-          point = navigationPoints.find((p: any) => p.id === pointId);
-        } catch (parseError) {
-          console.error('[Goto Point Error] Failed to parse navigationPoints JSON:', parseError);
-          res.status(500).json({ error: 'Failed to parse template navigation points' });
-          return;
-        }
-      } else {
-        console.log('[Goto Point Error] Template not found:', templateId);
-        res.status(404).json({ error: 'Template not found' });
-        return;
-      }
-    }
-    
+
+    const point = await NavigationPoint.findByPk(pointId);
+
     if (!point) {
       console.log('[Goto Point Error] Navigation point not found:', pointId);
       res.status(404).json({ error: 'Navigation point not found' });
       return;
     }
 
-    // 确保位置和方向是对象格式，不是字符串
     let positionObj, orientationObj;
     if (typeof point.position === 'string') {
       positionObj = JSON.parse(point.position);
     } else {
       positionObj = point.position;
     }
-    
+
     if (typeof point.orientation === 'string') {
       orientationObj = JSON.parse(point.orientation);
     } else {
       orientationObj = point.orientation;
     }
-    
+
     const testTask = {
       taskId: `test_${Date.now()}`,
       navigationSequence: [{
         pointId: point.id,
-        name: point.name, // ROS端期望的是'name'字段，不是'pointName'
-        position: positionObj, // 确保是对象，不是字符串
-        orientation: orientationObj, // 确保是对象，不是字符串
+        name: point.name,
+        position: positionObj,
+        orientation: orientationObj,
         status: 'pending',
       }],
       startFromPoint: 0,
@@ -284,17 +251,14 @@ export const gotoPoint = async (req: AuthRequest, res: Response): Promise<void> 
     console.log('[Goto Point] Publishing navigation task:', testTask);
 
     try {
-      // 切换速度命令路由到导航模式
       console.log('[Goto Point] Switching cmd_vel_mux to navigation mode...');
       try {
         await rosbridgeService.callServiceAsync('/cmd_vel_mux/switch', 'std_srvs/SetBool', { data: false });
         console.log('[Goto Point] Successfully switched cmd_vel_mux to navigation mode');
       } catch (muxError) {
         console.error('[Goto Point] Failed to switch cmd_vel_mux:', muxError);
-        // 继续执行导航任务，不因为速度路由切换失败而中断
       }
 
-      // 发布导航任务
       rosbridgeService.publish('/navigation_task/start', 'std_msgs/String', {
         data: JSON.stringify(testTask),
       });
@@ -358,29 +322,16 @@ export const setInitialPose = async (req: AuthRequest, res: Response): Promise<v
   }
 };
 
-async function generateNavigationSequence(task: any): Promise<any[]> {
-  const sequence: any[] = [];
-  
-  for (const templateId of task.templateIds) {
-    const template = await Template.findByPk(templateId);
-    if (!template) continue;
-
-    const points = await NavigationPoint.findAll({
-      where: { templateId },
-      order: [['order', 'ASC']],
-    });
-
-    for (const point of points) {
-      sequence.push({
-        pointId: point.id,
-        pointName: point.name,
-        position: point.position,
-        orientation: point.orientation,
-        status: 'pending',
-        actionOnArrival: point.actionOnArrival,
-      });
+export const getRobotPosition = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const pose = await rosbridgeService.getRobotPose();
+    if (pose && pose.position) {
+      res.json({ position: pose.position });
+    } else {
+      res.status(404).json({ error: 'Robot position not available' });
     }
+  } catch (error) {
+    console.error('Get robot position error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
-
-  return sequence;
-}
+};

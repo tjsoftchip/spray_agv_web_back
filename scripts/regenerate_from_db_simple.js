@@ -364,7 +364,7 @@ function createPGMBuffer(img) {
 function generateRoutesYaml(roads, turnArcs, origin) {
   const lines = [];
   lines.push('# GPS道路网络路线文件');
-  lines.push('# 用于route_executor逐点导航');
+  lines.push('# 用于道路网络归档和手动查阅');
   lines.push(`# 生成时间: ${new Date().toISOString()}`);
   lines.push(`# GPS原点: (${origin.gps.latitude}, ${origin.gps.longitude})`);
   lines.push(`# 地图旋转: ${origin.rotation || 0} rad`);

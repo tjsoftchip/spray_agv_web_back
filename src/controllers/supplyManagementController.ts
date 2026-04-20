@@ -122,7 +122,7 @@ export const startSupply = async (req: Request, res: Response) => {
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
     
-    rosbridgeService.callService('/supply_manager/start_supply', 'std_srvs/Trigger', {});
+    rosbridgeService.callService('/automation/manual_supply', 'std_srvs/Trigger', {});
     res.json({ 
       success: true, 
       message: 'Supply start command sent',
@@ -136,7 +136,7 @@ export const startSupply = async (req: Request, res: Response) => {
 // 暂停补给流程
 export const pauseSupply = async (req: Request, res: Response) => {
   try {
-    rosbridgeService.callService('/supply_manager/pause_supply', 'std_srvs/Trigger', {});
+    rosbridgeService.callService('/automation/manual_supply', 'std_srvs/Trigger', {});
     res.json({ success: true, message: 'Supply pause command sent' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to pause supply' });
@@ -146,7 +146,7 @@ export const pauseSupply = async (req: Request, res: Response) => {
 // 恢复补给流程
 export const resumeSupply = async (req: Request, res: Response) => {
   try {
-    rosbridgeService.callService('/supply_manager/resume_supply', 'std_srvs/Trigger', {});
+    rosbridgeService.callService('/automation/manual_supply', 'std_srvs/Trigger', {});
     res.json({ success: true, message: 'Supply resume command sent' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to resume supply' });
@@ -156,34 +156,14 @@ export const resumeSupply = async (req: Request, res: Response) => {
 // 停止补给流程
 export const stopSupply = async (req: Request, res: Response) => {
   try {
-    rosbridgeService.callService('/supply_manager/stop_supply', 'std_srvs/Trigger', {});
+    rosbridgeService.callService('/automation/cancel_supply', 'std_srvs/Trigger', {});
     res.json({ success: true, message: 'Supply stop command sent' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to stop supply' });
   }
 };
 
-// 创建任务
-export const createTask = async (req: Request, res: Response) => {
-  try {
-    rosbridgeService.callService('/task_manager/create_task', 'std_srvs/Trigger', {});
-    res.json({ success: true, message: 'Task creation command sent' });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to create task' });
-  }
-};
-
-// 启动任务
-export const startTask = async (req: Request, res: Response) => {
-  try {
-    rosbridgeService.callService('/task_manager/start_task', 'std_srvs/Trigger', {});
-    res.json({ success: true, message: 'Task start command sent' });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to start task' });
-  }
-};
-
-// 暂停任务
+// 暂停任务（对应 beam_position_task_node 的 /task_manager/pause_task 服务）
 export const pauseTask = async (req: Request, res: Response) => {
   try {
     rosbridgeService.callService('/task_manager/pause_task', 'std_srvs/Trigger', {});
@@ -203,27 +183,7 @@ export const resumeTask = async (req: Request, res: Response) => {
   }
 };
 
-// 保存任务状态
-export const saveTask = async (req: Request, res: Response) => {
-  try {
-    rosbridgeService.callService('/task_manager/save_task', 'std_srvs/Trigger', {});
-    res.json({ success: true, message: 'Task save command sent' });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to save task' });
-  }
-};
-
-// 加载任务状态
-export const loadTask = async (req: Request, res: Response) => {
-  try {
-    rosbridgeService.callService('/task_manager/load_task', 'std_srvs/Trigger', {});
-    res.json({ success: true, message: 'Task load command sent' });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to load task' });
-  }
-};
-
-// 停止任务
+// 停止任务（对应 beam_position_task_node 的 /task_manager/stop_task 服务）
 export const stopTask = async (req: Request, res: Response) => {
   try {
     rosbridgeService.callService('/task_manager/stop_task', 'std_srvs/Trigger', {});
@@ -308,8 +268,9 @@ export const getNodeStatus = async (req: Request, res: Response) => {
   try {
     // 返回示例节点数据
     res.json([
-      { name: '/supply_manager_node', info: { subscribers: [], publishers: [], services: [], actionServers: [], actionClients: [] } },
-      { name: '/task_manager_node', info: { subscribers: [], publishers: [], services: [], actionServers: [], actionClients: [] } },
+      { name: '/automation_manager_node', info: { subscribers: [], publishers: [], services: [], actionServers: [], actionClients: [] } },
+      { name: '/beam_position_task_node', info: { subscribers: [], publishers: [], services: [], actionServers: [], actionClients: [] } },
+      { name: '/spray_controller', info: { subscribers: [], publishers: [], services: [], actionServers: [], actionClients: [] } },
       { name: '/aruco_pose_estimator_node', info: { subscribers: [], publishers: [], services: [], actionServers: [], actionClients: [] } },
       { name: '/water_level_monitor_node', info: { subscribers: [], publishers: [], services: [], actionServers: [], actionClients: [] } }
     ]);

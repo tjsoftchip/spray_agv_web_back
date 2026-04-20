@@ -8,6 +8,7 @@ class RosbridgeService {
   private rosbridgeUrl: string;
   public latestObstacleStatus: any = null;
   public latestNavigationStatus: any = null;
+  public latestAutomationStatus: any = null;
 // 消息频率限制（毫秒）
   private messageThrottle = new Map<string, number>();
   private throttleInterval = 200; // 200ms最小间隔（提升性能）
@@ -22,6 +23,7 @@ class RosbridgeService {
     '/tf': 50,
     '/tf_static': 1000, // 静态tf消息限制在1s
     '/navigation_task/status': 200, // 导航状态200ms
+    '/task/status': 200, // 任务状态200ms（beam_position_task_node别名话题）
     '/obstacle_detection': 100, // 障碍物检测100ms
     '/camera/color/image_raw/compressed': 500, // 相机图像限制在500ms (2fps)
     '/emergency_stop_status': 1000, // 紧急停止状态限制在1s
@@ -64,6 +66,7 @@ class RosbridgeService {
         }
         
         this.subscribeTopic('/navigation_task/status', 'std_msgs/String');
+        this.subscribeTopic('/task/status', 'std_msgs/String');
         this.subscribeTopic('/obstacle_detection', 'std_msgs/String');
         // 使用RELIABLE QoS订阅水位话题（匹配driver_node发布者的QoS）
         this.subscribeTopic('/water_level', 'std_msgs/Float32', { 
@@ -95,6 +98,8 @@ class RosbridgeService {
           } 
         });
         console.log('Subscribed to navigation, obstacle detection, water level, GPS topics and battery level topics');
+        // 订阅自动化状态（用于显示补给进度）
+        this.subscribeTopic('/automation/status', 'std_msgs/String');
       });
 
       this.rosbridge.on('message', (data: WebSocket.Data) => {
@@ -118,20 +123,11 @@ class RosbridgeService {
               console.log(`[Rosbridge] ${topic}: received and broadcasted`);
             }
             
-            if (topic === '/navigation_task/status' && message.msg) {
+            if ((topic === '/navigation_task/status' || topic === '/task/status') && message.msg) {
               try {
                 const statusData = JSON.parse(message.msg.data);
                 this.latestNavigationStatus = statusData;
                 this.broadcastToClients('navigation_status', statusData);
-                
-                // 处理导航目标到达和失败事件
-                if (statusData.status === 'goal_reached' && statusData.task_id) {
-                  const taskExecutionService = require('./taskExecutionService').default;
-                  taskExecutionService.onNavigationGoalReached(statusData.task_id);
-                } else if (statusData.status === 'goal_failed' && statusData.task_id) {
-                  const taskExecutionService = require('./taskExecutionService').default;
-                  taskExecutionService.onNavigationGoalFailed(statusData.task_id, statusData.reason || 'Unknown error');
-                }
               } catch (e) {
                 console.error('Parse navigation status error:', e);
               }
@@ -142,6 +138,14 @@ class RosbridgeService {
                 this.broadcastToClients('obstacle_status', obstacleData);
               } catch (e) {
                 console.error('Parse obstacle detection error:', e);
+              }
+            } else if (topic === '/automation/status' && message.msg) {
+              try {
+                const automationData = JSON.parse(message.msg.data);
+                this.latestAutomationStatus = automationData;
+                this.broadcastToClients('automation_status', automationData);
+              } catch (e) {
+                console.error('Parse automation status error:', e);
               }
             } else if (topic === '/water_level' && message.msg) {
               try {

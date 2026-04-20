@@ -18,13 +18,9 @@ router.post('/supply/pause', supplyManagementController.pauseSupply);
 router.post('/supply/resume', supplyManagementController.resumeSupply);
 router.post('/supply/stop', supplyManagementController.stopSupply);
 
-// 任务管理
-router.post('/task/create', supplyManagementController.createTask);
-router.post('/task/start', supplyManagementController.startTask);
+// 任务管理 (仅保留有对应ROS2服务的操作)
 router.post('/task/pause', supplyManagementController.pauseTask);
 router.post('/task/resume', supplyManagementController.resumeTask);
-router.post('/task/save', supplyManagementController.saveTask);
-router.post('/task/load', supplyManagementController.loadTask);
 router.post('/task/stop', supplyManagementController.stopTask);
 router.get('/task/path', supplyManagementController.getTaskPath);
 

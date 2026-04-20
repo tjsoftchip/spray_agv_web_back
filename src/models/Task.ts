@@ -7,7 +7,6 @@ interface TaskAttributes {
   description: string;
   status: 'pending' | 'running' | 'paused' | 'completed' | 'failed';
   priority: number;
-  templateIds: string[];
   transitionSequence: string[];
   routeFilePath?: string;  // 作业路线文件路径
   executionType: 'manual' | 'scheduled' | 'queue';
@@ -65,7 +64,6 @@ class Task extends Model<TaskAttributes, TaskCreationAttributes> implements Task
   public description!: string;
   public status!: 'pending' | 'running' | 'paused' | 'completed' | 'failed';
   public priority!: number;
-  public templateIds!: string[];
   public transitionSequence!: string[];
   public routeFilePath?: string;
   public executionType!: 'manual' | 'scheduled' | 'queue';
@@ -139,11 +137,6 @@ Task.init(
       type: DataTypes.INTEGER,
       allowNull: false,
       defaultValue: 1,
-    },
-    templateIds: {
-      type: DataTypes.JSON,
-      allowNull: false,
-      defaultValue: [],
     },
     transitionSequence: {
       type: DataTypes.JSON,

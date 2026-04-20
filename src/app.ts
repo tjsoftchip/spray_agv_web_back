@@ -10,7 +10,6 @@ import rosbridgeService from './services/rosbridgeService';
 import scheduleService from './services/scheduleService';
 
 import authRoutes from './routes/auth';
-import templateRoutes from './routes/templates';
 import taskRoutes from './routes/tasks';
 import supplyStationRoutes from './routes/supplyStations';
 import supplyManagementRoutes from './routes/supplyManagement';
@@ -24,8 +23,6 @@ import userRoutes from './routes/users';
 import navigationRoutes from './routes/navigation';
 import obstacleRoutes from './routes/obstacles';
 import settingsRoutes from './routes/settings';
-import pathGeneratorRoutes from './routes/pathGenerator';
-import pathSMIntegrationRoutes from './routes/pathSMIntegration';
 import gpsMappingRoutes from './routes/gpsMapping';
 import jobPlanningRoutes from './routes/jobPlanning';
 
@@ -67,7 +64,6 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use('/api/auth', authLimiter, authRoutes);
-app.use('/api/templates', templateRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/supply/stations', supplyStationRoutes);
 app.use('/api/supply/management', supplyManagementRoutes);
@@ -81,8 +77,6 @@ app.use('/api/users', userRoutes);
 app.use('/api/navigation', navigationRoutes);
 app.use('/api/obstacles', obstacleRoutes);
 app.use('/api/settings', settingsRoutes);
-app.use('/api/path', pathGeneratorRoutes);
-app.use('/api/path-sm', pathSMIntegrationRoutes);
 app.use('/api/gps-mapping', gpsMappingRoutes);
 app.use('/api/job', jobPlanningRoutes);
 
