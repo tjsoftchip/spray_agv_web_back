@@ -112,12 +112,14 @@ function generateBeamPositionsJSON(beamPositions) {
 
 // 生成YAML配置
 function generateYAMLConfig(filename, resolution, origin) {
-  return `image: ${filename}
+  return `# GPS建图生成的代价地图配置文件
+image: ${filename}
 resolution: ${resolution}
 origin: [${origin[0].toFixed(6)}, ${origin[1].toFixed(6)}, ${origin[2] || 0}]
-negate: 0
-occupied_thresh: 0.65
-free_thresh: 0.196
+negate: 1
+occupied_thresh: 0.99
+free_thresh: 0.01
+mode: scale
 `;
 }
 
@@ -507,6 +509,11 @@ async function main() {
         fs.writeFileSync(path.join(mapsDir, 'beam_field_map.yaml'), yamlConfig);
         console.log('  ✓ beam_field_map.yaml');
 
+        // keepout_mask引用同一张PGM，negate: 1
+        const keepoutYamlConfig = generateYAMLConfig('beam_field_map.pgm', 0.1, mapOrigin);
+        fs.writeFileSync(path.join(mapsDir, 'beam_field_map_keepout_mask.yaml'), keepoutYamlConfig);
+        console.log('  ✓ beam_field_map_keepout_mask.yaml');
+
         console.log('\n=== 生成成功! ===');
       } catch (pgmErr) {
         console.error('PGM生成失败:', pgmErr.message);
@@ -514,7 +521,7 @@ async function main() {
 
       // 列出文件
       console.log('\n生成的文件:');
-      const files = ['gps_routes.json', 'gps_routes.yaml', 'beam_positions.json', 'gps_origin.yaml', 'beam_field_map.pgm', 'beam_field_map.yaml'];
+      const files = ['gps_routes.json', 'gps_routes.yaml', 'beam_positions.json', 'gps_origin.yaml', 'beam_field_map.pgm', 'beam_field_map.yaml', 'beam_field_map_keepout_mask.yaml'];
       files.forEach(f => {
         const p = path.join(mapsDir, f);
         if (fs.existsSync(p)) {

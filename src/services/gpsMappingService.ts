@@ -1323,7 +1323,7 @@ export class MapFileGenerator {
     return Buffer.concat([headerBuffer, dataBuffer]);
   }
 
-  generateYAMLConfig(imageName: string, resolution: number, origin: number[]): string {
+  generateYAMLConfig(imageName: string, resolution: number, origin: number[], negate: number = 1): string {
     return `# GPS建图生成的代价地图配置文件
 # Nav2 Costmap 官方标准值：
 # - 0: 自由空间 (FREE_SPACE) - 黑色，机器人优先通行
@@ -1338,7 +1338,7 @@ export class MapFileGenerator {
 image: ${imageName}
 resolution: ${resolution}
 origin: [${origin[0]}, ${origin[1]}, ${origin[2] || 0.0}]
-negate: 0
+negate: ${negate}
 occupied_thresh: 0.99  # 254/255 ≈ 0.99，灰度值>=254视为障碍
 free_thresh: 0.01      # 灰度值<=2视为自由空间
 mode: scale

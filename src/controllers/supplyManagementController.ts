@@ -122,9 +122,9 @@ export const startSupply = async (req: Request, res: Response) => {
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
     
-    rosbridgeService.callService('/automation/manual_supply', 'std_srvs/Trigger', {});
-    res.json({ 
-      success: true, 
+    rosbridgeService.callService('/automation/manual_supply', 'std_srvs/srv/Trigger', {});
+    res.json({
+      success: true,
       message: 'Supply start command sent',
       modeSwitched: currentMode !== 'supply'
     });
@@ -136,7 +136,7 @@ export const startSupply = async (req: Request, res: Response) => {
 // 暂停补给流程
 export const pauseSupply = async (req: Request, res: Response) => {
   try {
-    rosbridgeService.callService('/automation/manual_supply', 'std_srvs/Trigger', {});
+    rosbridgeService.callService('/automation/manual_supply', 'std_srvs/srv/Trigger', {});
     res.json({ success: true, message: 'Supply pause command sent' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to pause supply' });
@@ -146,7 +146,7 @@ export const pauseSupply = async (req: Request, res: Response) => {
 // 恢复补给流程
 export const resumeSupply = async (req: Request, res: Response) => {
   try {
-    rosbridgeService.callService('/automation/manual_supply', 'std_srvs/Trigger', {});
+    rosbridgeService.callService('/automation/manual_supply', 'std_srvs/srv/Trigger', {});
     res.json({ success: true, message: 'Supply resume command sent' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to resume supply' });
@@ -156,7 +156,7 @@ export const resumeSupply = async (req: Request, res: Response) => {
 // 停止补给流程
 export const stopSupply = async (req: Request, res: Response) => {
   try {
-    rosbridgeService.callService('/automation/cancel_supply', 'std_srvs/Trigger', {});
+    rosbridgeService.callService('/automation/cancel_supply', 'std_srvs/srv/Trigger', {});
     res.json({ success: true, message: 'Supply stop command sent' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to stop supply' });

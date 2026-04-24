@@ -804,12 +804,6 @@ async function generateMapFilesAsync(session: MappingSession) {
     const routesYaml = generateRoutesYaml(session.roads, session.turnArcs, origin);
     fs.writeFileSync(path.join(mapsDir, 'gps_routes.yaml'), routesYaml);
 
-    // 保存到web预览目录
-    const webMapsDir = path.join(process.cwd(), 'maps', 'beam_field');
-    if (!fs.existsSync(webMapsDir)) fs.mkdirSync(webMapsDir, { recursive: true });
-    fs.writeFileSync(path.join(webMapsDir, 'gps_routes.json'), JSON.stringify(gpsRoutesJSON, null, 2));
-    fs.writeFileSync(path.join(webMapsDir, 'beam_positions.json'), JSON.stringify(beamPositionsJSON, null, 2));
-
     // 提取道路参数
     const defaultPreferredWidth = 1.4;
     const defaultHighCostWidth = 0.3;
@@ -835,7 +829,9 @@ async function generateMapFilesAsync(session: MappingSession) {
         session.roads, session.turnArcs, 0.1, preferredWidth, highCostWidth
       );
       fs.writeFileSync(path.join(mapsDir, 'beam_field_map.pgm'), pgm);
-      fs.writeFileSync(path.join(mapsDir, 'beam_field_map.yaml'), mapFileGenerator!.generateYAMLConfig('beam_field_map.pgm', 0.1, mapOrigin));
+      fs.writeFileSync(path.join(mapsDir, 'beam_field_map.yaml'), mapFileGenerator!.generateYAMLConfig('beam_field_map.pgm', 0.1, mapOrigin, 1));
+      // keepout_mask引用同一张PGM，negate: 1（与主地图一致）
+      fs.writeFileSync(path.join(mapsDir, 'beam_field_map_keepout_mask.yaml'), mapFileGenerator!.generateYAMLConfig('beam_field_map.pgm', 0.1, mapOrigin, 1));
       console.log(`[GPS建图] PGM地图生成成功: ${width}x${height}`);
     } catch (pgmError: any) {
       console.error('[GPS建图] PGM地图生成失败:', pgmError?.message || pgmError);
@@ -852,7 +848,8 @@ async function generateMapFilesAsync(session: MappingSession) {
       { name: 'beam_positions.json', exists: fs.existsSync(path.join(mapsDir, 'beam_positions.json')), size: fs.existsSync(path.join(mapsDir, 'beam_positions.json')) ? fs.statSync(path.join(mapsDir, 'beam_positions.json')).size : 0 },
       { name: 'gps_origin.yaml', exists: fs.existsSync(path.join(mapsDir, 'gps_origin.yaml')), size: fs.existsSync(path.join(mapsDir, 'gps_origin.yaml')) ? fs.statSync(path.join(mapsDir, 'gps_origin.yaml')).size : 0 },
       { name: 'beam_field_map.pgm', exists: fs.existsSync(path.join(mapsDir, 'beam_field_map.pgm')), size: fs.existsSync(path.join(mapsDir, 'beam_field_map.pgm')) ? fs.statSync(path.join(mapsDir, 'beam_field_map.pgm')).size : 0 },
-      { name: 'beam_field_map.yaml', exists: fs.existsSync(path.join(mapsDir, 'beam_field_map.yaml')), size: fs.existsSync(path.join(mapsDir, 'beam_field_map.yaml')) ? fs.statSync(path.join(mapsDir, 'beam_field_map.yaml')).size : 0 }
+      { name: 'beam_field_map.yaml', exists: fs.existsSync(path.join(mapsDir, 'beam_field_map.yaml')), size: fs.existsSync(path.join(mapsDir, 'beam_field_map.yaml')) ? fs.statSync(path.join(mapsDir, 'beam_field_map.yaml')).size : 0 },
+      { name: 'beam_field_map_keepout_mask.yaml', exists: fs.existsSync(path.join(mapsDir, 'beam_field_map_keepout_mask.yaml')), size: fs.existsSync(path.join(mapsDir, 'beam_field_map_keepout_mask.yaml')) ? fs.statSync(path.join(mapsDir, 'beam_field_map_keepout_mask.yaml')).size : 0 }
     ];
 
     console.log('[GPS建图] 地图文件生成完成！');

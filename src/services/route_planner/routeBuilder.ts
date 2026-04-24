@@ -112,7 +112,16 @@ export class RouteBuilder {
     const completedTaskGroups = new Set<string>();
 
     for (const edge of edgePath) {
-      const waypoints = edge.points.map((pt, idx, arr) => {
+      // 双端截断：节点位置可能被圆弧更新到道路中间，
+      // 需要把 points 截断到精确匹配 sourceNode/targetNode 的位置
+      let points = this.truncateEdgePoints(edge);
+
+      // 转弯弧航点下采样至约 0.5m 间距，避免过密导致 RPP 来回跳动
+      if (edge.type === EdgeType.INTERNAL_ARC) {
+        points = this.downsamplePoints(points, 0.5);
+      }
+
+      const waypoints = points.map((pt, idx, arr) => {
         let yaw = 0;
         if (idx < arr.length - 1) {
           const next = arr[idx + 1];
@@ -150,6 +159,97 @@ export class RouteBuilder {
     }
 
     return segments;
+  }
+
+  /**
+   * 截断边的 points，使其精确从 sourceNode 位置开始、到 targetNode 位置结束。
+   * 修复圆弧端点更新节点位置后，道路边仍包含完整交叉点间航点的问题。
+   */
+  private truncateEdgePoints(edge: DirectedEdge): Array<{ x: number; y: number; latitude: number; longitude: number }> {
+    const raw = edge.points;
+    if (raw.length < 2) return raw;
+
+    const srcNode = this.topology.getNode(edge.sourceNodeId);
+    const tgtNode = this.topology.getNode(edge.targetNodeId);
+
+    // 没有节点位置信息时，返回原始点
+    if (!srcNode || !tgtNode) return raw;
+
+    const srcPos = srcNode.position;
+    const tgtPos = tgtNode.position;
+
+    // 找到离 source 最近的点
+    let startIdx = 0;
+    let startMinDist = Infinity;
+    for (let i = 0; i < raw.length; i++) {
+      const d = Math.hypot(raw[i].x - srcPos.x, raw[i].y - srcPos.y);
+      if (d < startMinDist) {
+        startMinDist = d;
+        startIdx = i;
+      }
+    }
+
+    // 找到离 target 最近的点
+    let endIdx = raw.length - 1;
+    let endMinDist = Infinity;
+    for (let i = 0; i < raw.length; i++) {
+      const d = Math.hypot(raw[i].x - tgtPos.x, raw[i].y - tgtPos.y);
+      if (d < endMinDist) {
+        endMinDist = d;
+        endIdx = i;
+      }
+    }
+
+    // 确保 start <= end；如果 start > end，说明这条边的 points 方向
+    // 和 source->target 方向相反（理论上 extractSegmentPoints 已处理），
+    // 此时交换并用反转后的点
+    if (startIdx > endIdx) {
+      const tmp = startIdx;
+      startIdx = endIdx;
+      endIdx = tmp;
+    }
+
+    // 截断，确保至少保留 2 个点
+    let truncated = raw.slice(startIdx, endIdx + 1);
+    if (truncated.length < 2) {
+      truncated = raw;
+    }
+
+    return truncated;
+  }
+
+  /**
+   * 对航点序列进行下采样，确保相邻点间距不小于 minSpacing。
+   * 用于减少转弯弧的航点密度，避免 RPP 控制器因 lookahead 在过密点之间跳动而产生 S 弯。
+   */
+  private downsamplePoints(
+    points: Array<{ x: number; y: number; latitude: number; longitude: number }>,
+    minSpacing: number
+  ): Array<{ x: number; y: number; latitude: number; longitude: number }> {
+    if (points.length < 3) return points;
+
+    const result = [points[0]];
+    let last = points[0];
+
+    for (let i = 1; i < points.length - 1; i++) {
+      const d = Math.hypot(points[i].x - last.x, points[i].y - last.y);
+      if (d >= minSpacing) {
+        result.push(points[i]);
+        last = points[i];
+      }
+    }
+
+    // 始终保留最后一个点
+    const lastPoint = points[points.length - 1];
+    const dLast = Math.hypot(lastPoint.x - last.x, lastPoint.y - last.y);
+    if (dLast >= minSpacing * 0.5 || result.length < 2) {
+      result.push(lastPoint);
+    } else if (result.length >= 2) {
+      // 用最后一个点替换 result 中最后一个中间点，保证终点精确
+      result[result.length - 1] = lastPoint;
+    }
+
+    return result;
   }
 
   private determineSegmentSprayMode(edge: DirectedEdge, isFirstVisit: boolean): OldSprayMode {

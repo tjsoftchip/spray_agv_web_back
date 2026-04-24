@@ -2,54 +2,27 @@
   "version": "1.0",
   "positions": [
     {
-      "id": "beam_AB_21",
-      "name": "A-B × 2-1",
-      "row": "A-B",
+      "id": "beam_BA_21",
+      "name": "B-A × 2-1",
+      "row": "B-A",
       "col": 1,
       "center": {
-        "x": 0.12547162810062673,
-        "y": 10.925314536343516
+        "x": -1.7475758950476503,
+        "y": 10.518348767970712
       },
       "boundaries": {
-        "north": "road_1775190730448",
-        "south": "road_1775191043978",
-        "east": "road_1775191237864",
-        "west": "road_1775190584884"
+        "north": "road_1776924646587",
+        "south": "road_1776924899366",
+        "east": "road_1776924242630",
+        "west": "road_1776924754877"
       },
       "corner_intersections": [
+        "inter_B_2",
         "inter_A_2",
-        "inter_B_2",
-        "inter_A_1",
-        "inter_B_1"
-      ],
-      "neighbors": {
-        "right": "beam_BC_21"
-      }
-    },
-    {
-      "id": "beam_BC_21",
-      "name": "B-C × 2-1",
-      "row": "B-C",
-      "col": 1,
-      "center": {
-        "x": 16.07928774171824,
-        "y": 13.817590125156213
-      },
-      "boundaries": {
-        "north": "road_1775190730448",
-        "south": "road_1775191043978",
-        "east": "road_1775190897161",
-        "west": "road_1775191237864"
-      },
-      "corner_intersections": [
-        "inter_B_2",
-        "inter_C_2",
         "inter_B_1",
-        "inter_C_1"
+        "inter_A_1"
       ],
-      "neighbors": {
-        "left": "beam_AB_21"
-      }
+      "neighbors": {}
     }
   ]
 }
