@@ -470,10 +470,10 @@ export class TopologyEngine {
         sourceNodeId: 'SUPPLY_STATION.STATION',
         targetNodeId: inNodeId,
         points: [
-          { latitude: 0, longitude: 0, x: supplyPos.x, y: supplyPos.y },
+          { latitude: 0, longitude: 0, x: interPos.x, y: interPos.y },
           { latitude: 0, longitude: 0, x: interPos.x, y: interPos.y },
         ],
-        length: this.dist(supplyPos, interPos),
+        length: 0,
         taskMode: 0,
         isCompleted: false,
       });
@@ -492,9 +492,9 @@ export class TopologyEngine {
         targetNodeId: 'SUPPLY_STATION_RETURN.STATION',
         points: [
           { latitude: 0, longitude: 0, x: interPos.x, y: interPos.y },
-          { latitude: 0, longitude: 0, x: supplyPos.x, y: supplyPos.y },
+          { latitude: 0, longitude: 0, x: interPos.x, y: interPos.y },
         ],
-        length: this.dist(interPos, supplyPos),
+        length: 0,
         taskMode: 0,
         isCompleted: false,
       });
@@ -512,9 +512,9 @@ export class TopologyEngine {
         targetNodeId: 'SUPPLY_STATION_RETURN.STATION',
         points: [
           { latitude: 0, longitude: 0, x: inPos.x, y: inPos.y },
-          { latitude: 0, longitude: 0, x: supplyPos.x, y: supplyPos.y },
+          { latitude: 0, longitude: 0, x: inPos.x, y: inPos.y },
         ],
-        length: this.dist(inPos, supplyPos),
+        length: 0,
         taskMode: 0,
         isCompleted: false,
       });

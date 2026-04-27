@@ -111,7 +111,41 @@ export class RouteBuilder {
     const segments: RouteSegment[] = [];
     const completedTaskGroups = new Set<string>();
 
+    // 第1遍：计算基础喷淋模式
+    const baseModes: OldSprayMode[] = [];
     for (const edge of edgePath) {
+      const isFirstVisit = !!edge.taskGroupId && !completedTaskGroups.has(edge.taskGroupId);
+      baseModes.push(this.determineSegmentSprayMode(edge, isFirstVisit));
+      if (isFirstVisit && edge.taskGroupId) {
+        completedTaskGroups.add(edge.taskGroupId);
+      }
+    }
+
+    // 第2遍：圆弧继承相邻喷淋段的模式
+    const finalModes = [...baseModes];
+    for (let i = 0; i < edgePath.length; i++) {
+      if (edgePath[i].type === EdgeType.INTERNAL_ARC && finalModes[i] === 'none') {
+        // 优先用下一段的模式（确保进入下个梁区时喷淋已就位）
+        const nextMode = i < edgePath.length - 1 ? baseModes[i + 1] : 'none';
+        const prevMode = i > 0 ? finalModes[i - 1] : 'none';
+        if (nextMode !== 'none') {
+          finalModes[i] = nextMode;
+        } else if (prevMode !== 'none') {
+          finalModes[i] = prevMode;
+        }
+      }
+    }
+
+    // 直线入口补偿：第一个喷淋段的前一段如果不是圆弧，也设为喷淋
+    const firstSprayIdx = finalModes.findIndex(m => m !== 'none');
+    if (firstSprayIdx > 0 && edgePath[firstSprayIdx - 1].type !== EdgeType.INTERNAL_ARC) {
+      finalModes[firstSprayIdx - 1] = finalModes[firstSprayIdx];
+    }
+
+    // 第3遍：用调整后的模式建段
+    for (let i = 0; i < edgePath.length; i++) {
+      const edge = edgePath[i];
+
       // 双端截断：节点位置可能被圆弧更新到道路中间，
       // 需要把 points 截断到精确匹配 sourceNode/targetNode 的位置
       let points = this.truncateEdgePoints(edge);
@@ -134,13 +168,10 @@ export class RouteBuilder {
         return { x: pt.x, y: pt.y, yaw };
       });
 
-      const isFirstVisit = !!edge.taskGroupId && !completedTaskGroups.has(edge.taskGroupId);
-      const sprayMode = this.determineSegmentSprayMode(edge, isFirstVisit);
-
       const seg: RouteSegment = {
         id: `seg_${segments.length}`,
         type: edge.type === 'EXTERNAL_ROAD' ? 'road' : edge.type === 'INTERNAL_ARC' ? 'turn_arc' : 'transit',
-        spray_mode: sprayMode,
+        spray_mode: finalModes[i],
         waypoints,
       };
 
@@ -152,10 +183,6 @@ export class RouteBuilder {
       }
 
       segments.push(seg);
-
-      if (isFirstVisit && edge.taskGroupId) {
-        completedTaskGroups.add(edge.taskGroupId);
-      }
     }
 
     return segments;
