@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import SystemConfig from '../models/SystemConfig';
+import rosbridgeService from '../services/rosbridgeService';
 
 // 获取所有系统配置
 export const getAllConfigs = async (req: Request, res: Response) => {
@@ -62,16 +63,17 @@ export const updateConfig = async (req: Request, res: Response) => {
 export const updateMultipleConfigs = async (req: Request, res: Response) => {
   try {
     const { configs } = req.body;
-    
+
     if (!Array.isArray(configs)) {
       return res.status(400).json({ error: 'Configs must be an array' });
     }
-    
+
     const results = [];
-    
+    const thresholdUpdates: { [key: string]: string } = {};
+
     for (const { key, value, description, category } of configs) {
       if (!key || value === undefined) continue;
-      
+
       const [config, created] = await SystemConfig.findOrCreate({
         where: { key },
         defaults: {
@@ -81,18 +83,37 @@ export const updateMultipleConfigs = async (req: Request, res: Response) => {
           category: category || 'general'
         }
       });
-      
+
       if (!created) {
-        await config.update({ 
+        await config.update({
           value,
           description: description || config.description,
           category: category || config.category
         });
       }
-      
+
       results.push({ key, value, updated: !created });
+
+      // 收集阈值参数变更
+      if (category === 'threshold' || key.includes('threshold')) {
+        thresholdUpdates[key] = String(value);
+      }
     }
-    
+
+    // 如果有阈值参数更新，同步到ROS2
+    if (Object.keys(thresholdUpdates).length > 0 && rosbridgeService.isConnected()) {
+      try {
+        rosbridgeService.publish(
+          '/automation/thresholds',
+          'std_msgs/String',
+          { data: JSON.stringify(thresholdUpdates) }
+        );
+        console.log('[Settings] 阈值已同步到ROS2:', thresholdUpdates);
+      } catch (e) {
+        console.error('[Settings] 同步阈值到ROS2失败:', e);
+      }
+    }
+
     res.json({ message: 'Configs updated successfully', results });
   } catch (error) {
     console.error('Error updating multiple configs:', error);

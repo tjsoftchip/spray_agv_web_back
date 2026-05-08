@@ -972,10 +972,10 @@ function generateGPSOriginYaml(origin: any, supplyStationEntry: SupplyStationEnt
   lines.push('    # GPS原点坐标 (WGS84)');
   lines.push(`    origin_latitude: ${origin.gps.latitude}`);
   lines.push(`    origin_longitude: ${origin.gps.longitude}`);
-  lines.push(`    origin_altitude: ${origin.gps.altitude || 0}`);
+  lines.push(`    origin_altitude: ${Number(origin.gps.altitude || 0).toFixed(4)}`);
   lines.push('');
   lines.push('    # 地图旋转角度（弧度）- 道路方向相对于UTM北的角度');
-  lines.push(`    map_rotation: ${origin.rotation || 0}`);
+  lines.push(`    map_rotation: ${Number(origin.rotation || 0).toFixed(6)}`);
   lines.push('');
   lines.push('    # UTM分区');
   lines.push(`    utm_zone: ${origin.utm.zone}`);
