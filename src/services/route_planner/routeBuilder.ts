@@ -51,8 +51,8 @@ export class RouteBuilder {
         this.beamPositions = beamData.positions || [];
       }
 
-      const supplyInterId = this.findSWIntersection();
       const supplyStationPos = this.loadSupplyStationPos(mapsDir);
+      const supplyInterId = this.findNearestIntersection(supplyStationPos);
 
       this.topology.build(this.roads, this.intersections, this.turnArcs, supplyInterId, supplyStationPos);
 
@@ -318,6 +318,30 @@ export class RouteBuilder {
     return Math.round(total * 100) / 100;
   }
 
+  private findNearestIntersection(supplyPos?: { x: number; y: number }): string {
+    // 如果没有补给站位置，使用默认的西南角交叉点
+    if (!supplyPos) {
+      return this.findSWIntersection();
+    }
+
+    let minDistance = Infinity;
+    let nearestInterId = this.intersections[0]?.id || 'inter_A_2';
+
+    for (const inter of this.intersections) {
+      const cx = inter.center.map_xy.x;
+      const cy = inter.center.map_xy.y;
+      const distance = Math.sqrt(Math.pow(supplyPos.x - cx, 2) + Math.pow(supplyPos.y - cy, 2));
+
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestInterId = inter.id;
+      }
+    }
+
+    console.log(`[RouteBuilder] 补给站最近交叉点: ${nearestInterId}, 距离: ${minDistance.toFixed(2)}m`);
+    return nearestInterId;
+  }
+
   private findSWIntersection(): string {
     let bestScore = Infinity;
     let swInterId = this.intersections[0]?.id || 'inter_A_2';
@@ -325,6 +349,7 @@ export class RouteBuilder {
     for (const inter of this.intersections) {
       const cx = inter.center.map_xy.x;
       const cy = inter.center.map_xy.y;
+      // 选择西南角(x+y最小)的交叉点
       const score = cx + cy;
       if (score < bestScore) {
         bestScore = score;
@@ -332,7 +357,7 @@ export class RouteBuilder {
       }
     }
 
-    console.log(`[RouteBuilder] SW交叉点: ${swInterId}`);
+    console.log(`[RouteBuilder] 西南角交叉点: ${swInterId}`);
     return swInterId;
   }
 
@@ -342,17 +367,32 @@ export class RouteBuilder {
 
     try {
       const content = fs.readFileSync(originPath, 'utf-8');
-      const xMatch = content.match(/x:\s*([\d.-]+)/);
-      const yMatch = content.match(/y:\s*([\d.-]+)/);
+
+      // 更简单的方法：直接查找supply_station.position下的x和y
+      const xMatch = content.match(/supply_station:([\s\S]*?)position:[\s\S]*?x:\s*([\d.-]+)/);
+      const yMatch = content.match(/supply_station:([\s\S]*?)position:[\s\S]*?y:\s*([\d.-]+)/);
+
       if (xMatch && yMatch) {
-        const pos = { x: parseFloat(xMatch[1]), y: parseFloat(yMatch[1]) };
+        const pos = { x: parseFloat(xMatch[2]), y: parseFloat(yMatch[2]) };
         console.log(`[RouteBuilder] 补给站位置: (${pos.x.toFixed(2)}, ${pos.y.toFixed(2)})`);
         return pos;
+      } else {
+        console.warn('[RouteBuilder] 无法解析supply_station.position中的x,y坐标');
+        // 尝试备用方法
+        const fallbackXMatch = content.match(/x:\s*(-?[\d.]+)/g);
+        const fallbackYMatch = content.match(/y:\s*(-?[\d.]+)/g);
+        if (fallbackXMatch && fallbackYMatch && fallbackXMatch.length > 1 && fallbackYMatch.length > 1) {
+          // 取第二个匹配（第一个可能是origin坐标）
+          const pos = { x: parseFloat(fallbackXMatch[1]), y: parseFloat(fallbackYMatch[1]) };
+          console.log(`[RouteBuilder] 补给站位置(备用): (${pos.x.toFixed(2)}, ${pos.y.toFixed(2)})`);
+          return pos;
+        }
+        return undefined;
       }
-    } catch {
-      // ignore
+    } catch (error) {
+      console.error('[RouteBuilder] 解析gps_origin.yaml失败:', error);
+      return undefined;
     }
-    return undefined;
   }
 
   generateYAML(route: JobRoute): string {
