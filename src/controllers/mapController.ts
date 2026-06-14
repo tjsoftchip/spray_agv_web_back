@@ -192,25 +192,10 @@ export const stopMapping = async (req: Request, res: Response) => {
 
 export const getMappingStatus = async (req: Request, res: Response) => {
   try {
-    const fs = require('fs');
-    
-    // 统一使用系统模式文件判断状态
-    if (fs.existsSync('/tmp/robot_system_mode')) {
-      const currentMode = fs.readFileSync('/tmp/robot_system_mode', 'utf8').trim();
-      const isMapping = currentMode === 'mapping';
-      
-      res.json({ 
-        isMapping: isMapping,
-        mode: currentMode,
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      res.json({ 
-        isMapping: false,
-        mode: 'unknown',
-        timestamp: new Date().toISOString()
-      });
-    }
+    res.json({ 
+      isMapping: false,
+      timestamp: new Date().toISOString()
+    });
   } catch (error) {
     console.error('Error getting mapping status:', error);
     res.status(500).json({ error: 'Failed to get mapping status' });
@@ -354,28 +339,12 @@ export const getMapImage = async (req: Request, res: Response) => {
 export const getMappingStatusLocal = async (req: Request, res: Response) => {
   try {
     const { exec } = require('child_process');
-    const fs = require('fs');
     
-    // 统一使用系统模式文件判断状态
-    let currentMode = 'unknown';
-    let isMapping = false;
-    
-    if (fs.existsSync('/tmp/robot_system_mode')) {
-      currentMode = fs.readFileSync('/tmp/robot_system_mode', 'utf8').trim();
-      isMapping = currentMode === 'mapping';
-    }
-    
-    // 可选：验证建图进程是否实际在运行（仅用于日志）
-    exec('pgrep -f "cartographer_node"', { shell: true }, (error: any, stdout: any) => {
+    exec('pgrep -x cartographer_node 2>/dev/null || pgrep -f "cartographer_node$" 2>/dev/null', { shell: true }, (error: any, stdout: any) => {
       const isProcessRunning = !error && stdout.trim().length > 0;
       
-      if (isMapping && !isProcessRunning) {
-        console.log('Mode is mapping but cartographer process not found, may be starting/stopping');
-      }
-      
       res.json({ 
-        isMapping: isMapping,
-        mode: currentMode,
+        isMapping: isProcessRunning,
         processRunning: isProcessRunning,
         timestamp: new Date().toISOString()
       });
@@ -396,54 +365,33 @@ export const forceStopMapping = async (req: Request, res: Response) => {
 
 export const startMappingLocal = async (req: Request, res: Response) => {
   try {
-    const { spawn } = require('child_process');
-    const fs = require('fs');
+    console.log('Starting mapping...');
     
-    console.log('Switching to mapping mode using system manager...');
+    const { exec } = require('child_process');
     
-    const projectDir = process.env.PROJECT_DIR || '/home/jetson/yahboomcar_ros2_ws';
-    const switchScript = `${projectDir}/switch_mode.sh`;
-    
-    // 只使用模式切换系统，由switch_mode.sh统一管理所有节点启动
-    const switchChild = spawn('bash', [switchScript, 'mapping'], {
-      detached: true,
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-    
-    let stdout = '';
-    let stderr = '';
-    
-    switchChild.stdout?.on('data', (data: Buffer) => {
-      stdout += data.toString();
-    });
-    
-    switchChild.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString();
-    });
-    
-    switchChild.on('exit', (code: number | null) => {
-      if (code === 0) {
-        console.log('Successfully switched to mapping mode');
+    // 启动 cartographer 建图节点
+    exec('pgrep -x cartographer_node || pgrep -f "cartographer_node$"', (error: any, stdout: string) => {
+      if (!error && stdout.trim().length > 0) {
+        console.log('Cartographer already running, skipping launch');
       } else {
-        console.error('Failed to switch to mapping mode:', stderr);
+        console.log('Launching cartographer...');
+        const projectDir = process.env.PROJECT_DIR || '/home/jetson/yahboomcar_ros2_ws';
+        const wsDir = `${projectDir}/yahboomcar_ws`;
+        exec(`bash -c 'source ${wsDir}/install/setup.bash && ros2 launch yahboomcar_nav cartographer_core_launch.py'`, {
+          detached: true,
+          stdio: 'ignore'
+        });
       }
     });
     
-    // 等待模式切换完成
-    await new Promise(resolve => setTimeout(resolve, 8000));
-    
-    // 确保日志文件存在
+    const fs = require('fs');
     fs.writeFileSync('/tmp/mapping.log', `Mapping started at ${new Date().toISOString()}\n`);
-    
-    // 只更新系统模式文件，不使用单独的mapping_state.json
-    // 状态统一由系统模式文件管理
-    fs.writeFileSync('/tmp/robot_system_mode', 'mapping');
     
     // 订阅所有必要的话题
     try {
       const rosbridgeService = require('../services/rosbridgeService').default;
       rosbridgeService.subscribeTopic('/map', 'nav_msgs/OccupancyGrid');
-      rosbridgeService.subscribeTopic('/robot_pose', 'geometry_msgs/PoseStamped');
+      rosbridgeService.subscribeTopic('/robot_pose', 'geometry_msgs/PoseWithCovarianceStamped');
       rosbridgeService.subscribeTopic('/tf', 'tf2_msgs/TFMessage');
       rosbridgeService.subscribeTopic('/point_cloud', 'sensor_msgs/PointCloud2');
       rosbridgeService.subscribeTopic('/scan_points', 'sensor_msgs/PointCloud');
@@ -452,11 +400,8 @@ export const startMappingLocal = async (req: Request, res: Response) => {
       console.error('Error subscribing to topics:', e);
     }
     
-    console.log('Mapping mode initialized successfully via system manager');
-    
     res.json({ 
       message: '建图模式启动成功',
-      mode: 'mapping',
       timestamp: new Date().toISOString()
     });
     
@@ -468,48 +413,13 @@ export const startMappingLocal = async (req: Request, res: Response) => {
 
 export const stopMappingLocal = async (req: Request, res: Response) => {
   try {
-    const { spawn } = require('child_process');
-    
     console.log('Stopping local mapping...');
     
-    // 只使用模式切换系统，由switch_mode.sh统一管理所有节点停止
-    console.log('Switching to idle mode using system manager...');
+    const { exec } = require('child_process');
     
-    const projectDir = process.env.PROJECT_DIR || '/home/jetson/yahboomcar_ros2_ws';
-    const switchScript = `${projectDir}/switch_mode.sh`;
-    
-    // 切换到待机模式
-    const switchChild = spawn('bash', [switchScript, 'idle'], {
-      detached: true,
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-    
-    let stdout = '';
-    let stderr = '';
-    
-    switchChild.stdout?.on('data', (data: Buffer) => {
-      stdout += data.toString();
-    });
-    
-    switchChild.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString();
-    });
-    
-    switchChild.on('exit', (code: number | null) => {
-      if (code === 0) {
-        console.log('Successfully switched to idle mode');
-      } else {
-        console.error('Failed to switch to idle mode:', stderr);
-      }
-    });
-    
-    // 等待模式切换完成
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // 只更新系统模式文件，不使用单独的mapping_state.json
-    // 状态统一由系统模式文件管理
-    const fs = require('fs');
-    fs.writeFileSync('/tmp/robot_system_mode', 'idle');
+    // 杀掉 cartographer 建图相关进程
+    console.log('Killing cartographer processes...');
+    exec('pkill -TERM -f cartographer_node 2>/dev/null; pkill -TERM -f cartographer_occupancy_grid_node 2>/dev/null; pkill -TERM -f "cartographer_core_launch" 2>/dev/null; sleep 2; pkill -9 -f cartographer_node 2>/dev/null; pkill -9 -f cartographer_occupancy_grid_node 2>/dev/null; pkill -9 -f cartographer 2>/dev/null');
     
     // 取消话题订阅
     try {
@@ -524,11 +434,8 @@ export const stopMappingLocal = async (req: Request, res: Response) => {
       console.error('Error unsubscribing topics:', e);
     }
     
-    console.log('Mapping mode stopped successfully via system manager');
-    
     res.json({ 
       message: '建图模式已停止',
-      mode: 'idle',
       timestamp: new Date().toISOString()
     });
     

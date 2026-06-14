@@ -9,9 +9,15 @@ class RosbridgeService {
   public latestObstacleStatus: any = null;
   public latestNavigationStatus: any = null;
   public latestAutomationStatus: any = null;
-// 消息频率限制（毫秒）
+  // 话题订阅引用计数（防止临时订阅取消持久订阅）
+  private subscriptionCounts = new Map<string, number>();
+
+  // 消息频率限制（毫秒）
   private messageThrottle = new Map<string, number>();
   private throttleInterval = 200; // 200ms最小间隔（提升性能）
+  
+  // 已记录过首次日志的GPS话题
+  private gpsTopicLogged = new Set<string>();
   
   // 特殊话题的频率限制
   private specialTopicIntervals: { [topic: string]: number } = {
@@ -118,8 +124,9 @@ class RosbridgeService {
             this.broadcastToClients('ros_message', message);
             this.messageThrottle.set(topic, now);
             
-            // GPS数据调试日志（每10条打印一次）
-            if (topic.startsWith('/gps/') && now % 10 === 0) {
+            // GPS数据调试日志（仅在首次收到时打印）
+            if (topic.startsWith('/gps/') && !this.gpsTopicLogged.has(topic)) {
+              this.gpsTopicLogged.add(topic);
               console.log(`[Rosbridge] ${topic}: received and broadcasted`);
             }
             
@@ -176,6 +183,7 @@ class RosbridgeService {
 
       this.rosbridge.on('close', () => {
         console.log('Disconnected from rosbridge');
+        this.subscriptionCounts.clear(); // 连接断开时重置引用计数
         this.scheduleReconnect();
       });
     } catch (error) {
@@ -218,24 +226,38 @@ class RosbridgeService {
   }
 
   public subscribeTopic(topic: string, messageType: string, options?: any): void {
-    const rosMessage: any = {
-      op: 'subscribe',
-      topic,
-      type: messageType,
-    };
-    // 如果指定了QoS选项，添加到消息中
-    if (options) {
-      rosMessage.options = options;
+    const count = this.subscriptionCounts.get(topic) || 0;
+    this.subscriptionCounts.set(topic, count + 1);
+
+    // 首次订阅时才真正发送subscribe到rosbridge
+    if (count === 0) {
+      const rosMessage: any = {
+        op: 'subscribe',
+        topic,
+        type: messageType,
+      };
+      // 如果指定了QoS选项，添加到消息中
+      if (options) {
+        rosMessage.options = options;
+      }
+      this.sendToRos(rosMessage);
     }
-    this.sendToRos(rosMessage);
   }
 
   public unsubscribeTopic(topic: string): void {
-    const rosMessage = {
-      op: 'unsubscribe',
-      topic,
-    };
-    this.sendToRos(rosMessage);
+    const count = this.subscriptionCounts.get(topic) || 0;
+    if (count > 1) {
+      // 还有其他订阅者，只减计数，不真正取消
+      this.subscriptionCounts.set(topic, count - 1);
+    } else {
+      // 最后一个订阅者，真正取消
+      this.subscriptionCounts.delete(topic);
+      const rosMessage = {
+        op: 'unsubscribe',
+        topic,
+      };
+      this.sendToRos(rosMessage);
+    }
   }
 
   public callService(service: string, serviceType: string, args: any, id?: string): void {
@@ -304,6 +326,13 @@ class RosbridgeService {
 
   public publish(topic: string, messageType: string, message: any): void {
     this.publishTopic(topic, messageType, message);
+  }
+
+  /**
+   * 向所有连接的 Web 客户端广播事件
+   */
+  public broadcast(event: string, data: any): void {
+    this.broadcastToClients(event, data);
   }
 
   // 获取机器人当前位姿（带回退机制）

@@ -6,7 +6,6 @@ import { SystemConfig } from '../models';
 
 // 系统状态接口
 interface SystemStatus {
-  mode: 'idle' | 'mapping' | 'navigation' | 'supply';
   basicServices: {
     chassis: boolean;
     cmdVelMux: boolean;
@@ -25,14 +24,12 @@ interface SystemStatus {
       webVideo: boolean;
     };
   };
-  lastModeChange: string;
   uptime: string;
   hostname: string;
 }
 
 // PID管理
 const PID_DIR = '/tmp/robot_system_pids';
-const MODE_FILE = '/tmp/robot_system_mode';
 const START_TIME_FILE = '/tmp/robot_system_start_time';
 
 // 检查进程是否运行
@@ -57,18 +54,6 @@ function readPidFile(filename: string): number | null {
     console.error(`Error reading PID file ${filename}:`, e);
   }
   return null;
-}
-
-// 读取当前模式
-function getCurrentMode(): string {
-  try {
-    if (fs.existsSync(MODE_FILE)) {
-      return fs.readFileSync(MODE_FILE, 'utf8').trim();
-    }
-  } catch (e) {
-    console.error('Error reading mode file:', e);
-  }
-  return 'unknown';
 }
 
 // 计算系统运行时间
@@ -136,12 +121,7 @@ export const getSystemStatus = async (req: Request, res: Response) => {
       console.error('Error getting hostname from database:', e);
     }
 
-    // 强制读取模式文件
-    const currentMode = getCurrentMode();
-    console.log('Current mode from file:', currentMode);
-
     const status: SystemStatus = {
-      mode: currentMode as any,
       basicServices: {
         chassis: false,
         cmdVelMux: false,
@@ -160,7 +140,6 @@ export const getSystemStatus = async (req: Request, res: Response) => {
           webVideo: false
         }
       },
-      lastModeChange: '',
       uptime: getUptime(),
       hostname: hostname
     };
@@ -182,47 +161,42 @@ export const getSystemStatus = async (req: Request, res: Response) => {
     const monitorPid = readPidFile('system_monitor.pid');
     if (monitorPid) status.basicServices.systemMonitor = isProcessRunning(monitorPid);
 
-    // 检查Web前端服务
-    try {
-      const { spawn } = require('child_process');
+    // 检查Web前端服务（异步，带超时）
+    status.basicServices.webFrontend = await new Promise<boolean>((resolve) => {
       const frontendCheck = spawn('curl', ['-s', '--connect-timeout', '2', 'http://localhost:5173'], {
         stdio: 'pipe'
       });
-      
+      const timer = setTimeout(() => {
+        frontendCheck.kill();
+        resolve(false);
+      }, 5000);
       frontendCheck.on('close', (code: number | null) => {
-        if (code === 0) {
-          status.basicServices.webFrontend = true;
-        }
+        clearTimeout(timer);
+        resolve(code === 0);
       });
-      
-      // 同步检查
-      const { execSync } = require('child_process');
-      try {
-        execSync('curl -s --connect-timeout 2 http://localhost:5173 > /dev/null', { timeout: 3000 });
-        status.basicServices.webFrontend = true;
-      } catch (e) {
-        status.basicServices.webFrontend = false;
-      }
-    } catch (e) {
-      status.basicServices.webFrontend = false;
-    }
+      frontendCheck.on('error', () => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+    });
 
     // 检查功能节点
     status.functionalNodes.mapping = await processExists('cartographer_node');
     status.functionalNodes.navigation = await processExists('nav2');
     status.functionalNodes.supply = await processExists('automation_manager');
     
-    // 检查传感器 - 使用 ROS2 节点列表检测（更准确）
+    // 检查传感器 - 使用 ROS2 节点列表检测（更准确，带超时）
     const ros2NodeList = await new Promise<string>((resolve) => {
-      exec('ros2 node list 2>/dev/null', (error, stdout) => {
+      const child = exec('ros2 node list 2>/dev/null', { timeout: 5000 }, (error, stdout) => {
         resolve(error ? '' : stdout);
       });
+      child.on('error', () => resolve(''));
     });
     
     const hasCameraNode = ros2NodeList.includes('camera') || ros2NodeList.includes('astra');
     const hasLidarNode = ros2NodeList.includes('ydlidar') || ros2NodeList.includes('lidar');
     const hasWebVideo = await new Promise<boolean>((resolve) => {
-      exec('pgrep -f "web_video_server" | wc -l', (error, stdout) => {
+      exec('pgrep web_video_serve 2>/dev/null | wc -l', { timeout: 5000 }, (error, stdout) => {
         resolve(!error && parseInt(stdout.trim()) > 0);
       });
     });
@@ -246,33 +220,33 @@ function processExists(processName: string): boolean {
     let command = '';
     switch (processName) {
       case 'cartographer_node':
-        command = 'pgrep -f "cartographer_node" | wc -l';
+        command = 'pgrep -x cartographer_node 2>/dev/null || pgrep -f "cartographer_node$" 2>/dev/null | wc -l';
         break;
       case 'nav2':
-        command = 'pgrep -f "nav2" | wc -l';
+        command = 'pgrep -x nav2 2>/dev/null || pgrep -f "nav2$" 2>/dev/null | wc -l';
         break;
       case 'supply_manager':
-        command = 'pgrep -f "automation_manager" | wc -l';
+        command = 'pgrep -x automation_manager 2>/dev/null || pgrep -f "automation_manager$" 2>/dev/null | wc -l';
         break;
       case 'astra_camera_node':
-        command = 'pgrep -f "astra_camera_node" | wc -l';
+        command = 'pgrep -x astra_camera_node 2>/dev/null || pgrep -f "astra_camera_node$" 2>/dev/null | wc -l';
         break;
       case 'ydlidar_ros2_driver':
-        command = 'pgrep -f "ydlidar_ros2_driver" | wc -l';
+        command = 'pgrep -x ydlidar_ros2_driver 2>/dev/null || pgrep -f "ydlidar_ros2_driver$" 2>/dev/null | wc -l';
         break;
       case 'web_video_server':
-        command = 'pgrep -f "web_video_server" | wc -l';
+        command = 'pgrep web_video_serve 2>/dev/null | wc -l';
         break;
       default:
-        command = `pgrep -f "${processName}" | wc -l`;
+        command = `pgrep -x "${processName}" 2>/dev/null || pgrep -f "${processName}$" 2>/dev/null | wc -l`;
     }
     
-    exec(command, (error, stdout) => {
+    exec(command, { timeout: 5000 }, (error, stdout) => {
       if (!error) {
         const count = parseInt(stdout.trim());
         if (count > 0) {
           // 验证进程是否真的在运行
-          exec(`pgrep -f "${processName}" | head -1 | xargs ps -p -o comm=`, (pidError, pidStdout) => {
+          exec(`pgrep -x "${processName}" 2>/dev/null || pgrep -f "${processName}$" 2>/dev/null | head -1 | xargs ps -p -o comm=`, { timeout: 5000 }, (pidError, pidStdout) => {
             resolve(!pidError && pidStdout.trim().length > 0);
           });
         } else {
@@ -284,81 +258,6 @@ function processExists(processName: string): boolean {
     });
   }) as any;
 }
-
-// 切换系统模式
-export const switchMode = async (req: Request, res: Response) => {
-  try {
-    const { mode } = req.body;
-    
-    if (!['idle', 'mapping', 'navigation', 'supply'].includes(mode)) {
-      return res.status(400).json({ error: 'Invalid mode' });
-    }
-
-    const projectDir = process.env.PROJECT_DIR || '/home/jetson/yahboomcar_ros2_ws';
-    const switchScript = path.join(projectDir, 'switch_mode.sh');
-
-    // 执行模式切换
-    const child = spawn('bash', [switchScript, mode], {
-      detached: true,
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    child.stdout?.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    child.stderr?.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    child.on('exit', (code) => {
-      if (code === 0) {
-        console.log(`Mode switched to ${mode} successfully`);
-      } else {
-        console.error(`Failed to switch mode to ${mode}:`, stderr);
-      }
-    });
-
-    // 等待一段时间让脚本执行，然后根据模式切换速度命令路由
-    setTimeout(async () => {
-      try {
-        // 如果是导航模式，enhanced_cmd_vel_mux_node会自动处理速度源切换
-        if (mode === 'navigation') {
-          console.log('[System Mode Switch] Navigation mode activated - enhanced_cmd_vel_mux_node will handle speed source priority');
-          stdout += '\n[INFO] Navigation mode activated - speed priority managed by enhanced_cmd_vel_mux_node';
-        }
-        
-        res.json({ 
-          message: `Switching to ${mode} mode`,
-          mode: mode,
-          stdout: stdout,
-          stderr: stderr
-        });
-      } catch (error) {
-        console.error('Error in post-switch processing:', error);
-        res.status(500).json({ error: 'Failed to complete mode switch' });
-      }
-    }, 3000);
-
-  } catch (error) {
-    console.error('Error switching mode:', error);
-    res.status(500).json({ error: 'Failed to switch mode' });
-  }
-};
-
-// 获取当前模式
-export const getCurrentModeApi = async (req: Request, res: Response) => {
-  try {
-    const mode = getCurrentMode();
-    res.json({ mode: mode });
-  } catch (error) {
-    console.error('Error getting current mode:', error);
-    res.status(500).json({ error: 'Failed to get current mode' });
-  }
-};
 
 // 重启系统层
 export const restartLayer = async (req: Request, res: Response) => {
@@ -379,7 +278,7 @@ export const restartLayer = async (req: Request, res: Response) => {
         
       case 'sensor':
         // 重启传感器
-        exec('pkill -f "astra_camera_node" && pkill -f "ydlidar_ros2_driver" && pkill -f "web_video_server"', (error) => {
+        exec('pkill -f "astra_camera_node" && pkill -f "ydlidar_ros2_driver" && pkill web_video_serve && pkill -f "ros2 run.*web_video_server"', (error) => {
           if (error) {
             console.error('Error restarting sensors:', error);
             return res.status(500).json({ error: 'Failed to restart sensors' });
@@ -528,6 +427,117 @@ export const updateSystemConfig = async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error updating system config:', error);
     res.status(500).json({ error: 'Failed to update system config' });
+  }
+};
+
+// web_video_server 进程引用
+let webVideoProcess: any = null;
+
+// 启动 web_video_server（按需）
+export const startWebVideoServer = async (req: Request, res: Response) => {
+  const projectDir = process.env.PROJECT_DIR || '/home/jetson/yahboomcar_ros2_ws';
+
+  try {
+    // 检查是否已在运行（匹配进程名 web_video_serve，Linux 截断至 15 字符）
+    const running = await new Promise<boolean>((resolve) => {
+      exec('pgrep web_video_serve 2>/dev/null | wc -l', (error, stdout) => {
+        resolve(!error && parseInt(stdout.trim()) > 0);
+      });
+    });
+
+    if (running) {
+      return res.json({ message: 'web_video_server is already running' });
+    }
+
+    // 构建 ROS2 环境加载命令
+    const rosSetup = `source /opt/ros/humble/setup.bash && source ${projectDir}/software/library_ws/install/setup.bash`;
+    const cmd = `${rosSetup} && ros2 run web_video_server web_video_server`;
+
+    // 使用 bash -c 确保 ROS2 环境正确加载
+    webVideoProcess = spawn('bash', ['-c', cmd], {
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    // 等待启动确认（或进程退出）
+    const startupResult = await new Promise<'started' | 'failed'>((resolve) => {
+      let settled = false;
+
+      const onOutput = (data: Buffer) => {
+        const output = data.toString();
+        console.log('[web_video_server]', output);
+        if (!settled && output.includes('Waiting For connections')) {
+          settled = true;
+          resolve('started');
+        }
+      };
+
+      webVideoProcess.stdout?.on('data', onOutput);
+      webVideoProcess.stderr?.on('data', onOutput);
+
+      webVideoProcess.on('error', (err: Error) => {
+        console.error('[web_video_server] Failed to start:', err.message);
+        if (!settled) {
+          settled = true;
+          resolve('failed');
+        }
+      });
+
+      webVideoProcess.on('exit', (code: number | null) => {
+        console.log(`[web_video_server] exited with code ${code}`);
+        webVideoProcess = null;
+        if (!settled) {
+          settled = true;
+          resolve(code === 0 ? 'started' : 'failed');
+        }
+      });
+
+      // 超时保护：最多等待 8 秒
+      setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          // 超时时检查进程是否仍在运行
+          if (webVideoProcess && webVideoProcess.exitCode === null) {
+            resolve('started');
+          } else {
+            resolve('failed');
+          }
+        }
+      }, 8000);
+    });
+
+    if (startupResult === 'started') {
+      res.json({ message: 'web_video_server started successfully' });
+    } else {
+      res.status(500).json({ error: 'Failed to start web_video_server' });
+    }
+  } catch (error) {
+    console.error('[web_video_server] Error starting:', error);
+    res.status(500).json({ error: 'Failed to start web_video_server' });
+  }
+};
+
+// 停止 web_video_server（关闭预览时）
+export const stopWebVideoServer = async (req: Request, res: Response) => {
+  try {
+    if (webVideoProcess) {
+      webVideoProcess.kill('SIGTERM');
+      webVideoProcess = null;
+      // 额外清理 ros2 wrapper 和实际 server 进程
+      exec('pkill web_video_serve 2>/dev/null; pkill -f "ros2 run.*web_video_server" 2>/dev/null');
+    } else {
+      // 通过 pkill 确保关闭（匹配进程名或 ros2 wrapper）
+      await new Promise<void>((resolve) => {
+        exec('pkill web_video_serve 2>/dev/null; pkill -f "ros2 run.*web_video_server" 2>/dev/null', (error) => {
+          resolve();
+        });
+      });
+    }
+
+    res.json({ message: 'web_video_server stopped successfully' });
+  } catch (error) {
+    console.error('[web_video_server] Error stopping:', error);
+    res.status(500).json({ error: 'Failed to stop web_video_server' });
   }
 };
 

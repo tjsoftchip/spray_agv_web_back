@@ -129,6 +129,16 @@ const startServer = async (): Promise<void> => {
     rosbridgeService.initialize(io);
     console.log('Rosbridge service initialized');
 
+    // 重置重启前遗留的 running/paused 任务和队列状态
+    const taskExecutionService = require('./services/taskExecutionService').default;
+    await taskExecutionService.resetStaleTasks();
+    const { TaskQueue } = require('./models');
+    await TaskQueue.update(
+      { status: 'idle' },
+      { where: { status: ['running', 'paused'] } }
+    );
+    console.log('Stale tasks and queue reset');
+
     scheduleService.start();
     console.log('Schedule service started');
 

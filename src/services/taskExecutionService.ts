@@ -92,16 +92,22 @@ class TaskExecutionService {
  throw new Error('ROS bridge not connected');
  }
 
- await task.update({
- status: 'running',
- startTime: new Date(),
- progress: 0,
- });
+  await task.update({
+    status: 'running',
+    startTime: new Date(),
+    progress: 0,
+  });
 
- this.currentTask = task;
- this.activeRosTaskId = taskId;
+  rosbridgeService.broadcast('task_status_changed', {
+    taskId: task.id,
+    status: 'running',
+    progress: 0,
+  });
 
- await this.addExecutionLog(task, 'info', '任务开始执行，发送指令到ROS2端');
+  this.currentTask = task;
+  this.activeRosTaskId = taskId;
+
+  await this.addExecutionLog(task, 'info', '任务开始执行，发送指令到ROS2端');
 
  // 统一通过 /navigation_task/start 发送给 beam_position_task_node
  // beam_position_task_node 已合并 route_executor 功能,支持 YAML 路线文件和梁位数据
@@ -112,9 +118,15 @@ class TaskExecutionService {
  // 有梁位数据 -> 发送梁位数据
  await this.executeViaNavigationTask(task);
  } else {
- // 无有效执行参数
- await this.completeTask(task, 'failed', '任务缺少路线文件或梁位数据');
- return;
+  // 无有效执行参数
+  await this.completeTask(task, 'failed', '任务缺少路线文件或梁位数据');
+  rosbridgeService.broadcast('task_status_changed', {
+    taskId: task.id,
+    status: 'failed',
+    progress: 0,
+    errorMessage: '任务缺少路线文件或梁位数据',
+  });
+  return;
  }
 
  // 启动状态轮询（从ROS2端同步进度到数据库）
@@ -229,16 +241,50 @@ class TaskExecutionService {
  await task.update({ progress });
  }
 
- // 如果ROS2端任务完成或失败，更新数据库
- if (dbStatus === 'completed') {
- await this.completeTask(task, 'completed', '任务执行完成');
- this.stopStatusPolling();
- await this.checkAndStartNextTask();
- } else if (dbStatus === 'failed') {
- const reason = rosStatus.errorMessage || '未知错误';
- await this.completeTask(task, 'failed', `任务失败: ${reason}`);
- this.stopStatusPolling();
- }
+  // 如果ROS2端任务完成或失败，更新数据库
+  if (dbStatus === 'completed') {
+    await this.completeTask(task, 'completed', '任务执行完成');
+    rosbridgeService.broadcast('task_status_changed', {
+      taskId: task.id,
+      status: 'completed',
+      progress: 100,
+    });
+    this.stopStatusPolling();
+    await this.checkAndStartNextTask();
+  } else if (dbStatus === 'failed') {
+    const reason = rosStatus.errorMessage || '未知错误';
+    await this.completeTask(task, 'failed', `任务失败: ${reason}`);
+    rosbridgeService.broadcast('task_status_changed', {
+      taskId: task.id,
+      status: 'failed',
+      progress: task.progress,
+      errorMessage: reason,
+    });
+    this.stopStatusPolling();
+  } else if (dbStatus === 'paused' && task.status === 'running') {
+    // ROS2端主动暂停（如GPS信号丢失导致自动暂停），同步到数据库
+    console.log(`[TaskExecutionService] ROS2 reported paused state, syncing to DB`);
+    await task.update({ status: 'paused' });
+    rosbridgeService.broadcast('task_status_changed', {
+      taskId: task.id,
+      status: 'paused',
+      progress: task.progress,
+    });
+    await this.addExecutionLog(task, 'warning', 'ROS2端上报暂停状态');
+    this.stopStatusPolling();
+  } else if (dbStatus === 'pending' && task.status === 'running') {
+    // ROS2端状态变为idle（空闲），说明任务已结束但没有捕获到中间状态
+    // 标记为已完成防止轮询永远跑下去
+    console.log(`[TaskExecutionService] ROS2 reported idle while task is running, marking completed`);
+    await this.completeTask(task, 'completed', 'ROS2端任务已结束');
+    rosbridgeService.broadcast('task_status_changed', {
+      taskId: task.id,
+      status: 'completed',
+      progress: Math.max(progress, task.progress),
+    });
+    this.stopStatusPolling();
+    await this.checkAndStartNextTask();
+  }
 
  } catch (error) {
  console.error('[TaskExecutionService] Error syncing ROS status:', error);
@@ -255,11 +301,16 @@ class TaskExecutionService {
  throw new Error('Task is not running');
  }
 
- // 通知ROS2端暂停
- rosbridgeService.publish('/navigation_task/pause', 'std_msgs/Empty', {});
+  // 通知ROS2端暂停
+  rosbridgeService.publish('/navigation_task/pause', 'std_msgs/Empty', {});
 
- await task.update({ status: 'paused' });
- await this.addExecutionLog(task, 'info', '任务已暂停');
+  await task.update({ status: 'paused' });
+  rosbridgeService.broadcast('task_status_changed', {
+    taskId: task.id,
+    status: 'paused',
+    progress: task.progress,
+  });
+  await this.addExecutionLog(task, 'info', '任务已暂停');
  }
 
  /**
@@ -272,11 +323,16 @@ class TaskExecutionService {
  throw new Error('Task is not paused');
  }
 
- // 通知ROS2端恢复
- rosbridgeService.publish('/navigation_task/resume', 'std_msgs/Empty', {});
+  // 通知ROS2端恢复
+  rosbridgeService.publish('/navigation_task/resume', 'std_msgs/Empty', {});
 
- await task.update({ status: 'running' });
- await this.addExecutionLog(task, 'info', '任务已恢复');
+  await task.update({ status: 'running' });
+  rosbridgeService.broadcast('task_status_changed', {
+    taskId: task.id,
+    status: 'running',
+    progress: task.progress,
+  });
+  await this.addExecutionLog(task, 'info', '任务已恢复');
 
  // 重新启动状态轮询
  this.activeRosTaskId = taskId;
@@ -294,11 +350,16 @@ class TaskExecutionService {
  throw new Error('Task is not running or paused');
  }
 
- // 通知ROS2端停止
- rosbridgeService.publish('/navigation_task/stop', 'std_msgs/Empty', {});
+  // 通知ROS2端停止
+  rosbridgeService.publish('/navigation_task/stop', 'std_msgs/Empty', {});
 
- this.stopStatusPolling();
- await this.completeTask(task, 'completed', '任务已手动停止');
+  this.stopStatusPolling();
+  await this.completeTask(task, 'completed', '任务已手动停止');
+  rosbridgeService.broadcast('task_status_changed', {
+    taskId: task.id,
+    status: 'completed',
+    progress: 100,
+  });
  }
 
  /**
@@ -337,9 +398,35 @@ class TaskExecutionService {
  }
  }
 
- /**
- * 添加执行日志
- */
+  /**
+   * 启动时重置僵死任务（重启前遗留在 running/paused 状态的任务）
+   */
+  public async resetStaleTasks(): Promise<void> {
+    try {
+      const staleTasks = await Task.findAll({
+        where: {
+          status: ['running', 'paused'],
+          isDeleted: false,
+        },
+      });
+      for (const task of staleTasks) {
+        console.log(`[TaskExecutionService] Resetting stale task: ${task.id} (${task.name}) from ${task.status} to pending`);
+        await task.update({
+          status: 'pending',
+          progress: 0,
+          startTime: undefined,
+          endTime: undefined,
+          currentNavigationIndex: 0,
+        });
+      }
+    } catch (error) {
+      console.error('[TaskExecutionService] Error resetting stale tasks:', error);
+    }
+  }
+
+  /**
+   * 添加执行日志
+   */
  private async addExecutionLog(
  task: Task,
  level: 'info' | 'warning' | 'error',

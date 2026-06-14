@@ -76,60 +76,52 @@ export const getSupplyStatus = async (req: Request, res: Response) => {
   }
 };
 
-// 启动补给流程
+// 启动补给流程（直接调用ROS服务）
 export const startSupply = async (req: Request, res: Response) => {
   try {
-    // 检查当前系统模式，如果不是补给模式则切换
-    const { spawn } = require('child_process');
-    const fs = require('fs');
-    
-    const currentMode = fs.existsSync('/tmp/robot_system_mode') 
-      ? fs.readFileSync('/tmp/robot_system_mode', 'utf8').trim() 
-      : 'unknown';
-    
-    if (currentMode !== 'supply') {
-      console.log(`Switching from ${currentMode} to supply mode...`);
-      
-      const projectDir = process.cwd();
-      const switchScript = `${projectDir}/switch_mode.sh`;
-      
-      // 切换到补给模式
-      const switchChild = spawn('bash', [switchScript, 'supply'], {
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe']
-      });
-      
-      let stdout = '';
-      let stderr = '';
-      
-      switchChild.stdout?.on('data', (data: Buffer) => {
-        stdout += data.toString();
-      });
-      
-      switchChild.stderr?.on('data', (data: Buffer) => {
-        stderr += data.toString();
-      });
-      
-      switchChild.on('exit', (code: number | null) => {
-        if (code === 0) {
-          console.log('Successfully switched to supply mode');
-        } else {
-          console.error('Failed to switch to supply mode:', stderr);
-        }
-      });
-      
-      // 等待模式切换完成
-      await new Promise(resolve => setTimeout(resolve, 5000));
-    }
-    
     rosbridgeService.callService('/automation/manual_supply', 'std_srvs/srv/Trigger', {});
     res.json({
       success: true,
-      message: 'Supply start command sent',
-      modeSwitched: currentMode !== 'supply'
+      message: 'Supply start command sent'
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to start supply' });
+  }
+};
+
+// 切换到喷水模式（通过状态机request话题）
+export const switchToSpray = async (req: Request, res: Response) => {
+  try {
+    rosbridgeService.publish('/unified_state_machine/request', 'std_msgs/String', {
+      data: JSON.stringify({
+        type: 'switch_to_spray',
+        timestamp: Date.now() / 1000
+      })
+    });
+    res.json({
+      success: true,
+      message: 'Switch to spray mode command sent'
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to switch to spray mode' });
+  }
+};
+
+// 设置自动补给模式（同步到ROS节点）
+export const setAutoSupplyEnabled = async (req: Request, res: Response) => {
+  try {
+    const { enabled } = req.body;
+    rosbridgeService.publish('/automation/thresholds', 'std_msgs/String', {
+      data: JSON.stringify({
+        auto_supply_enabled: enabled
+      })
+    });
+    res.json({
+      success: true,
+      message: `Auto supply ${enabled ? 'enabled' : 'disabled'}`
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to set auto supply mode' });
   }
 };
 

@@ -24,6 +24,10 @@ router.post('/task/resume', supplyManagementController.resumeTask);
 router.post('/task/stop', supplyManagementController.stopTask);
 router.get('/task/path', supplyManagementController.getTaskPath);
 
+// 模式切换
+router.post('/mode/spray', supplyManagementController.switchToSpray);
+router.post('/mode/auto-supply', supplyManagementController.setAutoSupplyEnabled);
+
 // 手动控制
 router.post('/control/manual', supplyManagementController.manualControl);
 

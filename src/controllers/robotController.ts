@@ -280,111 +280,28 @@ export const getWaterStatus = async (req: Request, res: Response) => {
         }
       });
       
-      // 获取水位状态
-      const statusResult = await new Promise((resolve) => {
-        let timeoutId: NodeJS.Timeout;
-        let messageReceived = false;
-
-        const cleanup = () => {
-          if (timeoutId) clearTimeout(timeoutId);
-          rosbridgeService.unsubscribeTopic('/water_monitor/status');
-        };
-
-        timeoutId = setTimeout(() => {
-          if (!messageReceived) {
-            cleanup();
-            resolve(null);
-          }
-        }, 2000);
-
-        const tempHandler = (data: any) => {
-          try {
-            const message = JSON.parse(data.toString());
-            if (message.topic === '/water_monitor/status' && message.msg) {
-              messageReceived = true;
-              cleanup();
-              resolve(message.msg.data);
-            }
-          } catch (error) {
-            console.error('Error parsing water status:', error);
-          }
-        };
-
-        const rosbridge = rosbridgeService.getRosbridge();
-        if (rosbridge) {
-          rosbridge.on('message', tempHandler);
-          rosbridgeService.subscribeTopic('/water_monitor/status', 'std_msgs/String');
-
-          setTimeout(() => {
-            rosbridge.removeListener('message', tempHandler);
-          }, 2000);
-        } else {
-          resolve(null);
-        }
-      });
-      
-      // 获取低水位告警
-      const lowResult = await new Promise((resolve) => {
-        let timeoutId: NodeJS.Timeout;
-        let messageReceived = false;
-
-        const cleanup = () => {
-          if (timeoutId) clearTimeout(timeoutId);
-          rosbridgeService.unsubscribeTopic('/water_low');
-        };
-
-        timeoutId = setTimeout(() => {
-          if (!messageReceived) {
-            cleanup();
-            resolve(null);
-          }
-        }, 2000);
-
-        const tempHandler = (data: any) => {
-          try {
-            const message = JSON.parse(data.toString());
-            if (message.topic === '/water_low' && message.msg) {
-              messageReceived = true;
-              cleanup();
-              resolve(message.msg.data);
-            }
-          } catch (error) {
-            console.error('Error parsing water low:', error);
-          }
-        };
-
-        const rosbridge = rosbridgeService.getRosbridge();
-        if (rosbridge) {
-          rosbridge.on('message', tempHandler);
-          rosbridgeService.subscribeTopic('/water_low', 'std_msgs/Bool');
-
-          setTimeout(() => {
-            rosbridge.removeListener('message', tempHandler);
-          }, 2000);
-        } else {
-          resolve(null);
-        }
-      });
-      
-      if (waterResult !== null) {
-        const level = waterResult as number;
-        const status = statusResult || 'unknown';
-        const isLow = lowResult || false;
-        
-        res.json({
-          waterLevel: Math.round(level),
-          status: status,
-          isLow: isLow,
-          lastUpdate: new Date().toISOString()
-        });
+      // 从水位百分比计算状态
+      const level = waterResult !== null ? (waterResult as number) : 0;
+      let status = 'unknown';
+      let isLow = false;
+      if (level < 10) {
+        status = 'critical';
+        isLow = true;
+      } else if (level < 30) {
+        status = 'low';
+        isLow = true;
+      } else if (level < 80) {
+        status = 'normal';
       } else {
-        res.json({
-          waterLevel: 0,
-          status: 'unknown',
-          isLow: false,
-          lastUpdate: new Date().toISOString()
-        });
+        status = 'high';
       }
+
+      res.json({
+        waterLevel: Math.round(level),
+        status: status,
+        isLow: isLow,
+        lastUpdate: new Date().toISOString()
+      });
     } catch (error: any) {
       console.error('Failed to get water status:', error);
       res.json({
@@ -448,7 +365,7 @@ export const controlSpray = async (req: Request, res: Response) => {
       rosbridgeService.publish('/spray/right_valve_control', 'std_msgs/Bool', { data: rightValve });
     }
     if (height !== undefined) {
-      rosbridgeService.publish('/spray/height_control', 'std_msgs/Float32', { data: height });
+      rosbridgeService.publish('/spray/arm_height_control', 'std_msgs/Bool', { data: height });
     }
 
     res.json({ message: 'Spray control command sent' });
@@ -459,55 +376,7 @@ export const controlSpray = async (req: Request, res: Response) => {
 
 export const startNavigation = async (req: Request, res: Response) => {
   try {
-    const { spawn } = require('child_process');
-    const fs = require('fs');
-    
-    console.log('Starting navigation using system manager...');
-    
-    // 使用模式切换系统启动导航模式
-    const projectDir = process.env.PROJECT_DIR || '/home/jetson/yahboomcar_ros2_ws';
-    const switchScript = `${projectDir}/switch_mode.sh`;
-    
-    // 先检查当前模式
-    let currentMode = 'unknown';
-    if (fs.existsSync('/tmp/robot_system_mode')) {
-      currentMode = fs.readFileSync('/tmp/robot_system_mode', 'utf8').trim();
-    }
-    
-    // 如果不是导航模式，先切换到导航模式
-    if (currentMode !== 'navigation') {
-      console.log('Switching to navigation mode...');
-      
-      const switchChild = spawn('bash', [switchScript, 'navigation'], {
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe']
-      });
-      
-      let stdout = '';
-      let stderr = '';
-      
-      switchChild.stdout?.on('data', (data: Buffer) => {
-        stdout += data.toString();
-      });
-      
-      switchChild.stderr?.on('data', (data: Buffer) => {
-        stderr += data.toString();
-      });
-      
-      switchChild.on('exit', (code: number | null) => {
-        if (code === 0) {
-          console.log('Successfully switched to navigation mode');
-        } else {
-          console.error('Failed to switch to navigation mode:', stderr);
-        }
-      });
-      
-      // 等待模式切换完成
-      await new Promise(resolve => setTimeout(resolve, 8000));
-      
-      // 更新系统模式文件
-      fs.writeFileSync('/tmp/robot_system_mode', 'navigation');
-    }
+    console.log('Starting navigation...');
     
     // 如果提供了导航目标，发送目标点
     if (req.body.goal) {
@@ -545,8 +414,7 @@ export const startNavigation = async (req: Request, res: Response) => {
       console.log('Navigation mode started and goal sent');
       
       res.json({ 
-        message: '导航模式已启动，目标点已发送',
-        mode: 'navigation',
+        message: '导航已启动，目标点已发送',
         goal: goalMessage,
         timestamp: new Date().toISOString()
       });
@@ -555,8 +423,7 @@ export const startNavigation = async (req: Request, res: Response) => {
       console.log('Navigation mode started without goal');
       
       res.json({ 
-        message: '导航模式已启动',
-        mode: 'navigation',
+        message: '导航已启动',
         timestamp: new Date().toISOString()
       });
     }
@@ -569,58 +436,13 @@ export const startNavigation = async (req: Request, res: Response) => {
 
 export const stopNavigation = async (req: Request, res: Response) => {
   try {
-    const { spawn } = require('child_process');
+    console.log('Stopping navigation via ROS topic...');
     
-    console.log('Stopping navigation using system manager...');
-    
-    // 使用模式切换系统退出导航模式，切换到待机模式
-    const projectDir = process.env.PROJECT_DIR || '/home/jetson/yahboomcar_ros2_ws';
-    const switchScript = `${projectDir}/switch_mode.sh`;
-    
-    // 先取消当前导航任务
-    try {
-      rosbridgeService.callService('/cancel_navigation', 'std_srvs/Empty', {});
-    } catch (error) {
-      console.log('Navigation service not available, proceeding with mode switch');
-    }
-    
-    // 切换到待机模式，停止所有导航相关节点
-    const switchChild = spawn('bash', [switchScript, 'idle'], {
-      detached: true,
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-    
-    let stdout = '';
-    let stderr = '';
-    
-    switchChild.stdout?.on('data', (data: Buffer) => {
-      stdout += data.toString();
-    });
-    
-    switchChild.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString();
-    });
-    
-    switchChild.on('exit', (code: number | null) => {
-      if (code === 0) {
-        console.log('Successfully switched to idle mode from navigation');
-      } else {
-        console.error('Failed to switch to idle mode:', stderr);
-      }
-    });
-    
-    // 等待模式切换完成
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // 更新系统模式文件
-    const fs = require('fs');
-    fs.writeFileSync('/tmp/robot_system_mode', 'idle');
-    
-    console.log('Navigation mode stopped successfully via system manager');
+    // 通过 ROS2 话题发送停止导航指令（clean shutdown）
+    rosbridgeService.publish('/navigation_task/stop', 'std_msgs/Empty', {});
     
     res.json({ 
-      message: '导航已停止，已切换到待机模式',
-      mode: 'idle',
+      message: '导航已停止',
       timestamp: new Date().toISOString()
     });
     
