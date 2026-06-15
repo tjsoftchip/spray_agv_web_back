@@ -3,6 +3,7 @@ import cors from 'cors';
 import compression from 'compression';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
+import path from 'path';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { initDatabase } from './models';
@@ -80,6 +81,10 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/gps-mapping', gpsMappingRoutes);
 app.use('/api/job', jobPlanningRoutes);
 
+// 托管前端静态文件（生产模式）
+const frontendDist = path.join(__dirname, '..', '..', 'frontend', 'dist');
+app.use(express.static(frontendDist));
+
 app.get('/api/health', async (req, res) => {
   const health = {
     status: 'ok',
@@ -96,6 +101,15 @@ app.get('/api/health', async (req, res) => {
     },
   };
   res.json(health);
+});
+
+// SPA路由回退：非API请求返回前端index.html
+app.get('/{*path}', (req, res) => {
+  if (!req.path.startsWith('/api')) {
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  } else {
+    res.status(404).json({ error: 'API endpoint not found' });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
