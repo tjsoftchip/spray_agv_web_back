@@ -1,0 +1,15 @@
+[Unit]
+Description=Yahboom ROS2 Four-Layer Service (Chassis, Sensors, Nav, Operation)
+After=network.target multi-user.target
+
+[Service]
+Type=simple
+User=jetson
+ExecStart=/home/jetson/yahboomcar_ros2_ws/web/backend/start_ros2.sh
+Restart=on-failure
+RestartSec=10
+KillMode=process
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

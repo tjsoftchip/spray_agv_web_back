@@ -1,0 +1,16 @@
+[Unit]
+Description=Yahboom Web Service (Backend + Frontend + Charging Proxy)
+After=network.target yahboom-ros2.service
+Wants=yahboom-ros2.service
+
+[Service]
+Type=simple
+User=jetson
+WorkingDirectory=/home/jetson/yahboomcar_ros2_ws/web/backend
+ExecStart=/home/jetson/yahboomcar_ros2_ws/web/backend/start_web.sh
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
