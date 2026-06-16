@@ -541,6 +541,20 @@ export const stopWebVideoServer = async (req: Request, res: Response) => {
   }
 };
 
+// web_video_server 运行状态查询（只读，不启动）
+export const getWebVideoServerStatus = async (req: Request, res: Response) => {
+  try {
+    const running = await new Promise<boolean>((resolve) => {
+      exec('pgrep web_video_serve 2>/dev/null | wc -l', (error, stdout) => {
+        resolve(!error && parseInt(stdout.trim()) > 0);
+      });
+    });
+    res.json({ running });
+  } catch (error) {
+    res.json({ running: false });
+  }
+};
+
 // 记录客户端错误日志
 export const logClientError = async (req: Request, res: Response) => {
   try {

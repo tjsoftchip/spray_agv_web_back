@@ -24,6 +24,7 @@ router.get('/topics', systemController.getTopicList);
 // web_video_server 按需启停
 router.post('/nodes/web-video/start', systemController.startWebVideoServer);
 router.post('/nodes/web-video/stop', systemController.stopWebVideoServer);
+router.get('/nodes/web-video/status', systemController.getWebVideoServerStatus);
 
 // 获取系统配置
 router.get('/config', systemController.getSystemConfig);
