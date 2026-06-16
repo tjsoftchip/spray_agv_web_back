@@ -1,11 +1,11 @@
 #!/bin/bash
 # 生产模式启动Web服务（后端 + 充电桩代理）
 # 用法: ./start_web.sh
-# systemctl自启动: ExecStart=/home/jetson/yahboomcar_ros2_ws/start_web.sh
+# systemctl自启动: ExecStart=/home/jetson/yahboomcar_ros2_ws/web/backend/start_web.sh
 
 set -e
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG_DIR="$PROJECT_DIR/web/logs"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
 
 # --- 充电桩代理服务 (端口 5001) ---
@@ -14,7 +14,7 @@ if [ -n "$PROXY_PID" ]; then
     echo "[充电桩代理] 已在运行 (PID: $PROXY_PID)"
 else
     echo "[充电桩代理] 启动中..."
-    python3 "$PROJECT_DIR/charging_proxy_server.py" >> "$LOG_DIR/charging_proxy.log" 2>&1 &
+    python3 "$SCRIPT_DIR/charging_proxy_server.py" >> "$LOG_DIR/charging_proxy.log" 2>&1 &
     PROXY_PID=$!
     sleep 1
     if ps -p $PROXY_PID > /dev/null 2>&1; then
@@ -37,15 +37,13 @@ if [ -n "$OLD_PID" ]; then
 fi
 
 # --- 启动后端（已包含前端静态文件托管） ---
-cd "$PROJECT_DIR/web/backend"
+cd "$SCRIPT_DIR"
 
-# 检查编译产物
 if [ ! -d "dist" ]; then
-    echo "[后端] 未找到编译产物，请先运行 ./build_web.sh"
+    echo "[后端] 未找到编译产物，请先运行 npm run build"
     exit 1
 fi
 
-# 检查依赖
 if [ ! -d "node_modules" ]; then
     echo "[后端] 安装依赖..."
     npm install --production
